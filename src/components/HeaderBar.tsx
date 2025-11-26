@@ -15,14 +15,7 @@ const STATUS_CHIPS: StatusChipConfig[] = [
         bg: "bg-[#ECFDF3]",
         text: "text-[#166534]",
         dotColor: "bg-[#22C55E]",
-    },
-    {
-        id: "threatdb",
-        label: "Threat DB synced",
-        bg: "bg-[#EFF6FF]",
-        text: "text-[#1D4ED8]",
-        dotColor: "bg-[#3B82F6]",
-    },
+    }
 ];
 
 const HeaderBar: React.FC = () => {
