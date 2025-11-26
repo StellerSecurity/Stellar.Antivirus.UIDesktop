@@ -29,7 +29,7 @@ type ScanProgress = {
 // Er vi i Tauri eller ren browser?
 const isTauri =
     typeof window !== "undefined" &&
-    !!(window as any).__TAURI_INTERNALS__; // 👈 v2-safe check
+    !!(window as any).__TAURI_INTERNALS__; // v2-safe check
 
 const App: React.FC = () => {
   const [view, setView] = useState<View>("antivirus_dashboard");
@@ -165,6 +165,44 @@ const App: React.FC = () => {
     };
   }, [realtimeEnabled]);
 
+  // Lyt efter realtime file events (FSEvents via notify)
+  useEffect(() => {
+    if (!isTauri) return;
+
+    let unlisten: UnlistenFn | null = null;
+
+    listen("realtime_file_event", (event) => {
+      const payload = event.payload as any;
+      const now = new Date().toISOString().slice(0, 16).replace("T", " ");
+      const details = `Real-time protection observed ${payload.event} on ${payload.file}`;
+
+      setLogs((prev) => {
+        const last = prev[0];
+        // hvis sidste log allerede er samme realtime-event → skip
+        if (last && last.scan_type === "realtime" && last.details === details) {
+          return prev;
+        }
+
+        return [
+          {
+            id: prev.length + 1,
+            timestamp: now,
+            scan_type: "realtime",
+            result: "clean",
+            details,
+          },
+          ...prev,
+        ];
+      });
+    }).then((fn) => {
+      unlisten = fn;
+    });
+
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
   const handleToggleRealtime = (enabled: boolean) => {
     if (!enabled) {
       setPendingRealtimeValue(false);
@@ -174,6 +212,11 @@ const App: React.FC = () => {
 
     setRealtimeEnabled(true);
     setStatus("protected");
+
+    if (isTauri) {
+      invoke("set_realtime_enabled", { enabled: true }).catch(() => {});
+    }
+
     setLogs((prev) => [
       {
         id: prev.length + 1,
@@ -190,6 +233,11 @@ const App: React.FC = () => {
     if (pendingRealtimeValue === false) {
       setRealtimeEnabled(false);
       setStatus("not_protected");
+
+      if (isTauri) {
+        invoke("set_realtime_enabled", { enabled: false }).catch(() => {});
+      }
+
       setLogs((prev) => [
         {
           id: prev.length + 1,

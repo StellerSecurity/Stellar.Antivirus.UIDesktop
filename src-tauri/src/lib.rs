@@ -1,7 +1,21 @@
-use std::{fs, path::PathBuf, thread, time::Duration};
+use std::{
+    fs,
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread,
+    time::Duration,
+};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter}; // 👈 VIGTIG: Emitter trait
+use tauri::{AppHandle, Emitter};
+
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+
+// global flag der styrer om vi emitter realtime events
+static REALTIME_ENABLED: AtomicBool = AtomicBool::new(true);
 
 #[derive(Serialize, Clone)]
 struct ScanProgressPayload {
@@ -14,6 +28,14 @@ struct ScanProgressPayload {
 struct ScanFinishedPayload {
     threats: Vec<(String, String)>,
 }
+
+#[derive(Serialize, Clone)]
+struct RealtimeFilePayload {
+    file: String,
+    event: String,
+}
+
+// ---- Commands ----
 
 #[tauri::command]
 async fn fake_full_scan(app: AppHandle) -> Result<(), String> {
@@ -44,7 +66,6 @@ async fn fake_full_scan(app: AppHandle) -> Result<(), String> {
     for (i, file) in files_to_scan.iter().enumerate() {
         let file_str = file.to_string_lossy().to_string();
 
-        // Emit progress event
         if let Err(e) = app.emit(
             "scan_progress",
             ScanProgressPayload {
@@ -57,10 +78,7 @@ async fn fake_full_scan(app: AppHandle) -> Result<(), String> {
         }
 
         let lower = file_str.to_lowercase();
-        if lower.contains("crack")
-            || lower.contains("patch")
-            || lower.ends_with(".exe")
-        {
+        if lower.contains("crack") || lower.contains("patch") || lower.ends_with(".exe") {
             let name = file
                 .file_name()
                 .unwrap_or_default()
@@ -72,21 +90,103 @@ async fn fake_full_scan(app: AppHandle) -> Result<(), String> {
         thread::sleep(Duration::from_millis(10));
     }
 
-    // Emit finished event
-    if let Err(e) = app.emit(
-        "scan_finished",
-        ScanFinishedPayload { threats },
-    ) {
+    if let Err(e) = app.emit("scan_finished", ScanFinishedPayload { threats }) {
         eprintln!("failed to emit scan_finished: {e}");
     }
 
     Ok(())
 }
 
+#[tauri::command]
+fn set_realtime_enabled(enabled: bool) {
+    REALTIME_ENABLED.store(enabled, Ordering::SeqCst);
+    println!("Realtime protection set to: {enabled}");
+}
+
+// ---- Realtime watcher (FSEvents via notify) ----
+
+fn start_realtime_watcher(app_handle: AppHandle) {
+    thread::spawn(move || {
+        let mut watch_paths: Vec<PathBuf> = Vec::new();
+
+        if let Some(downloads) = dirs::download_dir() {
+            watch_paths.push(downloads);
+        }
+        if let Some(documents) = dirs::document_dir() {
+            watch_paths.push(documents);
+        }
+        if let Some(desktop) = dirs::desktop_dir() {
+            watch_paths.push(desktop);
+        }
+
+        let (tx, rx) = mpsc::channel::<Event>();
+
+        let mut watcher: RecommendedWatcher =
+            notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
+                match res {
+                    Ok(event) => {
+                        let _ = tx.send(event);
+                    }
+                    Err(e) => eprintln!("watch error: {e}"),
+                }
+            })
+            .expect("failed to create file watcher");
+
+        for path in &watch_paths {
+            if let Err(e) = watcher.watch(path, RecursiveMode::Recursive) {
+                eprintln!("failed to watch {:?}: {e}", path);
+            }
+        }
+
+        println!("Realtime watcher started on {:?}", watch_paths);
+
+        for event in rx {
+            if !REALTIME_ENABLED.load(Ordering::SeqCst) {
+                continue;
+            }
+
+            if event.paths.is_empty() {
+                continue;
+            }
+
+            let path = &event.paths[0];
+            let file = path.to_string_lossy().to_string();
+            let kind_str = match &event.kind {
+                EventKind::Create(_) => "create",
+                EventKind::Modify(_) => "modify",
+                EventKind::Remove(_) => "remove",
+                EventKind::Any => "any",
+                _ => "other",
+            }
+            .to_string();
+
+            if let Err(e) = app_handle.emit(
+                "realtime_file_event",
+                RealtimeFilePayload {
+                    file,
+                    event: kind_str,
+                },
+            ) {
+                eprintln!("failed to emit realtime_file_event: {e}");
+            }
+        }
+    });
+}
+
+// ---- App entry ----
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![fake_full_scan])
+        .invoke_handler(tauri::generate_handler![
+            fake_full_scan,
+            set_realtime_enabled
+        ])
+        .setup(|app| {
+            let handle = app.handle().clone();
+            start_realtime_watcher(handle);
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
