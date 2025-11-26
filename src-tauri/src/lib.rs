@@ -1,6 +1,7 @@
 use std::{
     fs,
-    path::PathBuf,
+    io::Read,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc,
@@ -9,15 +10,12 @@ use std::{
     time::Duration,
 };
 
-use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use tauri::{AppHandle, Emitter};
 use tauri_plugin_autostart::MacosLauncher;
-use rusqlite::{Connection, params};
-use sha2::{Sha256, Digest};
-use hex;
-use std::path::Path;
-
 
 // ---- Global state ----
 
@@ -57,7 +55,6 @@ struct ThreatDbFile {
     db_version: u32,
     updated_at: String,
     threats: Vec<ThreatJsonEntry>,
-    // rules ignorerer vi lige nu
 }
 
 #[derive(Deserialize)]
@@ -90,15 +87,6 @@ struct ThreatSignature {
 
 // ---- Helper paths ----
 
-fn is_test_filename(path: &Path) -> bool {
-    if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
-        let lower = name.to_lowercase();
-        // Fang fx "stellar-test.bin" (du kan tilføje flere mønstre senere)
-        return lower == "stellar-test.bin" || lower == "stellar_test.bin";
-    }
-    false
-}
-
 fn quarantine_root() -> PathBuf {
     let base_dir = dirs::data_dir()
         .or_else(dirs::home_dir)
@@ -112,9 +100,15 @@ fn db_path() -> PathBuf {
         .or_else(dirs::home_dir)
         .unwrap_or_else(|| PathBuf::from("."));
 
-    base_dir
-        .join("StellarAntivirus")
-        .join("stellar_av.db")
+    base_dir.join("StellarAntivirus").join("stellar_av.db")
+}
+
+fn is_test_filename(path: &Path) -> bool {
+    if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+        let lower = name.to_lowercase();
+        return lower == "stellar-test.bin" || lower == "stellar_test.bin";
+    }
+    false
 }
 
 // ---- DB init ----
@@ -126,8 +120,7 @@ fn init_db() -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create db dir: {e}"))?;
     }
 
-    let conn = Connection::open(&db_file)
-        .map_err(|e| format!("Failed to open DB: {e}"))?;
+    let conn = Connection::open(&db_file).map_err(|e| format!("Failed to open DB: {e}"))?;
 
     conn.execute_batch(
         r#"
@@ -152,16 +145,15 @@ fn init_db() -> Result<(), String> {
             FOREIGN KEY(threat_id) REFERENCES threat_signatures(id)
         );
         "#,
-    ).map_err(|e| format!("Failed to create tables: {e}"))?;
+    )
+    .map_err(|e| format!("Failed to create tables: {e}"))?;
 
     Ok(())
 }
 
 // ---- Hash & lookup helpers ----
 
-fn sha256_of_file(path: &std::path::Path) -> Option<String> {
-    use std::io::Read;
-
+fn sha256_of_file(path: &Path) -> Option<String> {
     let mut file = std::fs::File::open(path).ok()?;
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 8192];
@@ -181,11 +173,13 @@ fn sha256_of_file(path: &std::path::Path) -> Option<String> {
 fn lookup_threat_by_hash(hash: &str) -> Option<ThreatSignature> {
     let conn = Connection::open(db_path()).ok()?;
 
-    let mut stmt = conn.prepare(
-        "SELECT id, sha256, name, family, severity, platforms
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, sha256, name, family, severity, platforms
          FROM threat_signatures
          WHERE sha256 = ?1",
-    ).ok()?;
+        )
+        .ok()?;
 
     let sig = stmt
         .query_row(params![hash], |row| {
@@ -198,7 +192,7 @@ fn lookup_threat_by_hash(hash: &str) -> Option<ThreatSignature> {
                 platforms: row.get(5)?,
             })
         })
-        .ok()?; // Result<T, E> -> Option<T>
+        .ok()?;
 
     Some(sig)
 }
@@ -260,12 +254,31 @@ async fn fake_full_scan(app: AppHandle) -> Result<(), String> {
             },
         );
 
+        // 1) Prøv hash-baseret match
+        let mut detected = false;
         if let Some(hash) = sha256_of_file(file) {
             let hash_lower = hash.to_lowercase();
             if let Some(sig) = lookup_threat_by_hash(&hash_lower) {
                 threats.push((sig.name.clone(), file_str.clone()));
                 insert_detection(&file_str, &hash_lower, Some(&sig), "full_scan", "none");
+                detected = true;
+            } else if is_test_filename(file) {
+                // 2) Testfil-regel på filnavn
+                let test_name = "Stellar.Test.FileNameRule".to_string();
+                threats.push((test_name.clone(), file_str.clone()));
+                insert_detection(&file_str, &hash_lower, None, "full_scan", "none");
+                detected = true;
             }
+        } else if is_test_filename(file) {
+            // Kan ikke hashe, men filnavn matcher vores testregel
+            let test_name = "Stellar.Test.FileNameRule".to_string();
+            threats.push((test_name.clone(), file_str.clone()));
+            insert_detection(&file_str, "<no-hash>", None, "full_scan", "none");
+            detected = true;
+        }
+
+        if !detected {
+            // no-op
         }
 
         thread::sleep(Duration::from_millis(10));
@@ -277,32 +290,17 @@ async fn fake_full_scan(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn delete_files(paths: Vec<String>) -> Result<(), String> {
-    for p in paths {
-        let path = Path::new(&p);
-        if path.exists() {
-            if let Err(e) = fs::remove_file(path) {
-                eprintln!("Failed to delete file {}: {}", p, e);
-                // Vi fortsætter, selvom en fil fejler
-            }
-        }
-    }
-    Ok(())
-}
-
-#[tauri::command]
 fn set_realtime_enabled(enabled: bool) {
     REALTIME_ENABLED.store(enabled, Ordering::SeqCst);
     println!("Realtime protection set to: {enabled}");
 }
 
 #[tauri::command]
-fn quarantine_files(paths: Vec<String>) -> Result<(), String> {
-    let quarantine_root = quarantine_root();
+async fn quarantine_files(paths: Vec<String>) -> Result<(), String> {
+    let qdir = quarantine_root();
 
-    fs::create_dir_all(&quarantine_root).map_err(|e| {
-        format!("Failed to create quarantine directory: {e}")
-    })?;
+    fs::create_dir_all(&qdir)
+        .map_err(|e| format!("Failed to create quarantine directory: {e}"))?;
 
     for original in paths {
         let src = PathBuf::from(&original);
@@ -312,33 +310,30 @@ fn quarantine_files(paths: Vec<String>) -> Result<(), String> {
             continue;
         }
 
-        let file_name = src
-            .file_name()
-            .unwrap_or_else(|| std::ffi::OsStr::new("unknown"));
+        let fname = src.file_name().unwrap_or_else(|| std::ffi::OsStr::new("unknown"));
+        let dest = qdir.join(fname);
 
-        let dest = quarantine_root.join(file_name);
-
+        // SLET gammel fil i quarantine – vi bruger altid 1:1 navn
         if dest.exists() {
-            if let Err(e) = fs::remove_file(&dest) {
-                eprintln!("failed to remove existing quarantine file {:?}: {e}", dest);
-            }
+            let _ = fs::remove_file(&dest);
         }
 
-        let rename_result = fs::rename(&src, &dest);
-        if let Err(e) = rename_result {
-            eprintln!("rename failed ({src:?} -> {dest:?}): {e}, trying copy+delete");
-            if let Err(e2) = fs::copy(&src, &dest).and_then(|_| fs::remove_file(&src)) {
-                eprintln!("copy+delete also failed for {src:?}: {e2}");
-                return Err(format!("Failed to quarantine file {original}: {e2}"));
-            }
+        // Flyt filen til karantæne
+        if let Err(e) = fs::rename(&src, &dest) {
+            eprintln!("rename failed: {e}, trying copy+delete");
+            fs::copy(&src, &dest).and_then(|_| fs::remove_file(&src))
+                .map_err(|e2| format!("Failed to quarantine file {original}: {e2}"))?;
         }
+
+        println!("Quarantined file: {src:?} -> {dest:?}");
     }
 
     Ok(())
 }
 
+
 #[tauri::command]
-fn restore_from_quarantine(items: Vec<RestoreItem>) -> Result<(), String> {
+async fn restore_from_quarantine(items: Vec<RestoreItem>) -> Result<(), String> {
     let quarantine_root = quarantine_root();
 
     for item in items {
@@ -375,6 +370,8 @@ fn restore_from_quarantine(items: Vec<RestoreItem>) -> Result<(), String> {
                     item.file_name, item.original_path
                 ));
             }
+        } else {
+            println!("Restored file: {src:?} -> {dest:?}");
         }
     }
 
@@ -382,7 +379,7 @@ fn restore_from_quarantine(items: Vec<RestoreItem>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn delete_quarantine_files(file_names: Vec<String>) -> Result<(), String> {
+async fn delete_quarantine_files(file_names: Vec<String>) -> Result<(), String> {
     let quarantine_root = quarantine_root();
 
     for name in file_names {
@@ -395,6 +392,8 @@ fn delete_quarantine_files(file_names: Vec<String>) -> Result<(), String> {
         if let Err(e) = fs::remove_file(&path) {
             eprintln!("failed to delete quarantine file {:?}: {e}", path);
             return Err(format!("Failed to delete quarantine file {}: {e}", name));
+        } else {
+            println!("Deleted quarantine file: {:?}", path);
         }
     }
 
@@ -402,12 +401,34 @@ fn delete_quarantine_files(file_names: Vec<String>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn update_threat_db(threats_json: String) -> Result<(), String> {
-    let db_file: ThreatDbFile = serde_json::from_str(&threats_json)
-        .map_err(|e| format!("Failed to parse threat DB JSON: {e}"))?;
+async fn delete_files(paths: Vec<String>) -> Result<(), String> {
+    let qdir = quarantine_root();
 
-    let mut conn = Connection::open(db_path())
-        .map_err(|e| format!("Failed to open DB: {e}"))?;
+    for original in paths {
+        let fname = Path::new(&original)
+            .file_name()
+            .unwrap()
+            .to_os_string();
+
+        let qpath = qdir.join(fname);
+
+        if qpath.exists() {
+            println!("Deleting quarantine file: {:?}", qpath);
+            fs::remove_file(&qpath).map_err(|e| format!("Failed to delete file: {e}"))?;
+        }
+    }
+
+    Ok(())
+}
+
+
+#[tauri::command]
+fn update_threat_db(threats_json: String) -> Result<(), String> {
+    let db_file: ThreatDbFile =
+        serde_json::from_str(&threats_json).map_err(|e| format!("Failed to parse threat DB JSON: {e}"))?;
+
+    let mut conn =
+        Connection::open(db_path()).map_err(|e| format!("Failed to open DB: {e}"))?;
 
     let tx = conn
         .transaction()
@@ -440,7 +461,10 @@ fn update_threat_db(threats_json: String) -> Result<(), String> {
     tx.commit()
         .map_err(|e| format!("Failed to commit threat DB update: {e}"))?;
 
-    println!("Threat DB updated from server. db_version = {}", db_file.db_version);
+    println!(
+        "Threat DB updated from server. db_version = {}",
+        db_file.db_version
+    );
 
     Ok(())
 }
@@ -464,13 +488,11 @@ fn start_realtime_watcher(app_handle: AppHandle) {
         let (tx, rx) = mpsc::channel::<Event>();
 
         let mut watcher: RecommendedWatcher =
-            notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
-                match res {
-                    Ok(event) => {
-                        let _ = tx.send(event);
-                    }
-                    Err(e) => eprintln!("watch error: {e}"),
+            notify::recommended_watcher(move |res: Result<Event, notify::Error>| match res {
+                Ok(event) => {
+                    let _ = tx.send(event);
                 }
+                Err(e) => eprintln!("watch error: {e}"),
             })
             .expect("failed to create file watcher");
 
@@ -502,7 +524,7 @@ fn start_realtime_watcher(app_handle: AppHandle) {
             }
             .to_string();
 
-            // 1) Emit normal realtime log til UI
+            // 1) Emit realtime event til UI (men du logger den ikke længere i React)
             if let Err(e) = app_handle.emit(
                 "realtime_file_event",
                 RealtimeFilePayload {
@@ -513,28 +535,46 @@ fn start_realtime_watcher(app_handle: AppHandle) {
                 eprintln!("failed to emit realtime_file_event: {e}");
             }
 
-            // 2) Kun ved create/modify: hash + threat lookup
+            // 2) Kun ved create/modify: hash + threat lookup + test-filnavn
             if matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_)) {
+                let mut detected_name: Option<String> = None;
+                let mut detected_hash: Option<String> = None;
+
                 if let Some(hash) = sha256_of_file(path) {
                     let hash_lower = hash.to_lowercase();
                     if let Some(sig) = lookup_threat_by_hash(&hash_lower) {
-                        // gem detection i DB som realtime
                         insert_detection(&file, &hash_lower, Some(&sig), "realtime", "none");
-
-                        // emit særskilt event så UI kan reagere (toast/modal/log)
-                        let _ = app_handle.emit(
-                            "realtime_threat_detected",
-                            ScanFinishedPayload {
-                                threats: vec![(sig.name.clone(), file.clone())],
-                            },
-                        );
+                        detected_name = Some(sig.name.clone());
+                        detected_hash = Some(hash_lower);
+                    } else if is_test_filename(path) {
+                        let test_name = "Stellar.Test.FileNameRule".to_string();
+                        insert_detection(&file, &hash_lower, None, "realtime", "none");
+                        detected_name = Some(test_name);
+                        detected_hash = Some(hash_lower);
                     }
+                } else if is_test_filename(path) {
+                    let test_name = "Stellar.Test.FileNameRule".to_string();
+                    insert_detection(&file, "<no-hash>", None, "realtime", "none");
+                    detected_name = Some(test_name);
+                    detected_hash = Some("<no-hash>".to_string());
+                }
+
+                if let Some(name) = detected_name {
+                    let _ = app_handle.emit(
+                        "realtime_threat_detected",
+                        ScanFinishedPayload {
+                            threats: vec![(name, file.clone())],
+                        },
+                    );
+                }
+
+                if detected_hash.is_some() {
+                    // could extend later for richer payload
                 }
             }
         }
     });
 }
-
 
 // ---- App entry ----
 
@@ -561,6 +601,7 @@ pub fn run() {
 
             let handle = app.handle().clone();
             start_realtime_watcher(handle);
+
             Ok(())
         })
         .run(tauri::generate_context!())

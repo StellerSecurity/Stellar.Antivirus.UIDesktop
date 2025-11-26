@@ -24,6 +24,10 @@ const ThreatsModal: React.FC<ThreatsModalProps> = ({
         onRemove(ids);
     };
 
+    const handleRemoveSingle = (id: number) => {
+        onRemove([id]);
+    };
+
     return (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40">
             <div className="bg-white rounded-3xl shadow-[0_24px_60px_rgba(15,23,42,0.45)] w-[560px] max-h-[480px] flex flex-col overflow-hidden">
@@ -88,6 +92,7 @@ const ThreatsModal: React.FC<ThreatsModalProps> = ({
                                                 <span>{sourceLabel}</span>
                                             </div>
                                         </div>
+
                                         <div className="flex flex-col items-end gap-2">
                       <span className="text-[11px] px-2 py-0.5 rounded-full bg-[#FEF2F2] text-[#B91C1C]">
                         {status === "active"
@@ -96,6 +101,14 @@ const ThreatsModal: React.FC<ThreatsModalProps> = ({
                                 ? "Quarantined"
                                 : "Deleted"}
                       </span>
+
+                                            {/* Ny: per-threat remove-knap */}
+                                            <button
+                                                onClick={() => handleRemoveSingle(t.id)}
+                                                className="px-3 h-7 rounded-full text-[11px] font-medium bg-[#DC2626] text-white hover:bg-[#B91C1C]"
+                                            >
+                                                Remove
+                                            </button>
                                         </div>
                                     </div>
                                 );

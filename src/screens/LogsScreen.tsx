@@ -13,12 +13,16 @@ interface LogsScreenProps {
     logs: ScanLogEntry[];
     quarantine: QuarantineEntry[];
     onViewThreats: () => void;
+    onRestoreQuarantine: (id: number) => void;
+    onDeleteQuarantine: (id: number) => void;
 }
 
 const LogsScreen: React.FC<LogsScreenProps> = ({
                                                    logs,
                                                    quarantine,
                                                    onViewThreats,
+                                                   onRestoreQuarantine,
+                                                   onDeleteQuarantine,
                                                }) => {
     const [activeTab, setActiveTab] = useState<"activity" | "quarantine">(
         "activity"
@@ -65,7 +69,11 @@ const LogsScreen: React.FC<LogsScreenProps> = ({
                 {activeTab === "activity" ? (
                     <ActivityList logs={logs} />
                 ) : (
-                    <QuarantineList entries={quarantine} />
+                    <QuarantineList
+                        entries={quarantine}
+                        onRestore={onRestoreQuarantine}
+                        onDelete={onDeleteQuarantine}
+                    />
                 )}
             </div>
         </div>
@@ -124,9 +132,11 @@ const ActivityList: React.FC<{ logs: ScanLogEntry[] }> = ({ logs }) => {
     );
 };
 
-const QuarantineList: React.FC<{ entries: QuarantineEntry[] }> = ({
-                                                                      entries,
-                                                                  }) => {
+const QuarantineList: React.FC<{
+    entries: QuarantineEntry[];
+    onRestore: (id: number) => void;
+    onDelete: (id: number) => void;
+}> = ({ entries, onRestore, onDelete }) => {
     if (!entries.length) {
         return (
             <div className="h-full flex items-center justify-center">
@@ -151,8 +161,10 @@ const QuarantineList: React.FC<{ entries: QuarantineEntry[] }> = ({
                     <th className="font-medium px-3">Original location</th>
                     <th className="font-medium px-3">Detection</th>
                     <th className="font-medium px-3 w-[120px]">Quarantined</th>
+                    <th className="font-medium px-3 w-[140px]">Actions</th>
                 </tr>
                 </thead>
+
                 <tbody>
                 {entries.map((q) => (
                     <tr
@@ -169,20 +181,41 @@ const QuarantineList: React.FC<{ entries: QuarantineEntry[] }> = ({
                   </span>
                             </div>
                         </td>
+
                         <td className="px-3 py-2 align-top">
                 <span className="text-[11px] text-[#6B7280] break-all">
                   {q.originalPath}
                 </span>
                         </td>
+
                         <td className="px-3 py-2 align-top">
                 <span className="text-[11px] text-[#DC2626]">
                   {q.detection || "Threat"}
                 </span>
                         </td>
+
                         <td className="px-3 py-2 align-top">
                 <span className="text-[11px] text-[#6B7280]">
                   {q.quarantinedAt}
                 </span>
+                        </td>
+
+                        <td className="px-3 py-2 align-top">
+                            <div className="flex flex-col gap-2 w-[120px]">
+                                <button
+                                    onClick={() => onRestore(q.id)}
+                                    className="w-full px-3 py-1 text-[11px] rounded-full bg-[#F3F4F6] hover:bg-[#E5E7EB] text-[#111827]"
+                                >
+                                    Restore
+                                </button>
+
+                                <button
+                                    onClick={() => onDelete(q.id)}
+                                    className="w-full px-3 py-1 text-[11px] rounded-full bg-[#DC2626] text-white hover:bg-[#B91C1C]"
+                                >
+                                    Delete permanently
+                                </button>
+                            </div>
                         </td>
                     </tr>
                 ))}

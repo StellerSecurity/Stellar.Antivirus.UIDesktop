@@ -10,6 +10,7 @@ import ThreatsModal from "./components/ThreatsModal";
 import type { ProtectionStatus, ScanLogEntry, Threat } from "./types";
 import { isEnabled as isAutostartEnabled, enable as enableAutostart } from "@tauri-apps/plugin-autostart";
 
+
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
@@ -410,6 +411,55 @@ const App: React.FC = () => {
 
     const handleOpenThreatsModal = () => {
         setShowThreatsModal(true);
+    };
+
+    const handleQuarantineThreat = async (t: Threat) => {
+        if (!isTauri) return; // fallback
+
+        try {
+            await invoke("quarantine_files", { paths: [t.filePath] });
+
+            setLogs((prev) => [
+                {
+                    id: prev.length + 1,
+                    timestamp: new Date().toISOString().slice(0, 16).replace("T", " "),
+                    scan_type: "realtime",
+                    result: "clean",
+                    details: `Moved to quarantine: ${t.fileName}`,
+                },
+                ...prev,
+            ]);
+
+            setThreats((prev) => prev.filter((x) => x.id !== t.id));
+
+        } catch (err) {
+            console.error("Quarantine failed:", err);
+        }
+    };
+
+    const handleDeleteThreat = async (t: Threat) => {
+        if (!isTauri) return;
+
+        try {
+            await invoke("delete_files", { paths: [t.filePath] });
+
+            setLogs((prev) => [
+                {
+                    id: prev.length + 1,
+                    timestamp: new Date().toISOString().slice(0, 16).replace("T", " "),
+                    scan_type: "realtime",
+                    result: "clean",
+                    details: `Permanently deleted: ${t.fileName}`,
+                },
+                ...prev,
+            ]);
+
+            // Fjern fra ThreatsModal list
+            setThreats((prev) => prev.filter((x) => x.id !== t.id));
+
+        } catch (err) {
+            console.error("Delete failed:", err);
+        }
     };
 
     const handleRemoveThreats = async (ids: number[]) => {
