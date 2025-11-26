@@ -26,9 +26,10 @@ type ScanProgress = {
   file: string;
 };
 
-// Helper: er vi inde i en Tauri desktop-app, eller bare i browser?
+// Er vi i Tauri eller ren browser?
 const isTauri =
-    typeof window !== "undefined" && "__TAURI_IPC__" in (window as any);
+    typeof window !== "undefined" &&
+    !!(window as any).__TAURI_INTERNALS__; // 👈 v2-safe check
 
 const App: React.FC = () => {
   const [view, setView] = useState<View>("antivirus_dashboard");
@@ -73,7 +74,8 @@ const App: React.FC = () => {
   });
 
   const [showDisableModal, setShowDisableModal] = useState(false);
-  const [pendingRealtimeValue, setPendingRealtimeValue] = useState<boolean | null>(null);
+  const [pendingRealtimeValue, setPendingRealtimeValue] =
+      useState<boolean | null>(null);
 
   const [showThreatsModal, setShowThreatsModal] = useState(false);
   const [threats, setThreats] = useState<Threat[]>([
@@ -93,13 +95,7 @@ const App: React.FC = () => {
     },
   ]);
 
-  // Menubar status (kun i Tauri)
-  useEffect(() => {
-    if (!isTauri) return;
-    invoke("set_tray_status", { status }).catch(() => {});
-  }, [status]);
-
-  // Lyt efter fake scanning-events fra Tauri (scan_progress + scan_finished)
+  // Lyt efter fake scanning events (kun i Tauri)
   useEffect(() => {
     if (!isTauri) return;
 
@@ -158,7 +154,6 @@ const App: React.FC = () => {
         ]);
       }
 
-      // reset progress efter scan
       setScanProgress({ current: 0, total: 0, file: "" });
     }).then((fn) => {
       unlistenFinished = fn;
@@ -221,7 +216,7 @@ const App: React.FC = () => {
     setStatus("scanning");
     setScanProgress({ current: 0, total: 0, file: "" });
 
-    // Hvis vi kører som ren web (ikke Tauri) → fake 2 sekunders scan
+    // Web preview: fake 2 sek. scan
     if (!isTauri) {
       const timestamp = new Date().toISOString().slice(0, 16).replace("T", " ");
 
@@ -233,7 +228,8 @@ const App: React.FC = () => {
             timestamp,
             scan_type: "full_scan",
             result: "clean",
-            details: "Full system scan completed. No threats found (web preview mode).",
+            details:
+                "Full system scan completed. No threats found (web preview mode).",
           },
           ...prev,
         ]);
@@ -243,7 +239,7 @@ const App: React.FC = () => {
       return;
     }
 
-    // Rigtig fake_full_scan via Tauri backend
+    // Tauri: brug fake_full_scan command
     try {
       await invoke("fake_full_scan");
     } catch (err) {
@@ -299,7 +295,9 @@ const App: React.FC = () => {
         timestamp: new Date().toISOString().slice(0, 16).replace("T", " "),
         scan_type: "full_scan",
         result: "clean",
-        details: `${removedCount} threat${removedCount === 1 ? "" : "s"} were removed by Stellar Antivirus.`,
+        details: `${removedCount} threat${
+            removedCount === 1 ? "" : "s"
+        } were removed by Stellar Antivirus.`,
       },
       ...prev,
     ]);
@@ -307,9 +305,17 @@ const App: React.FC = () => {
     setShowThreatsModal(false);
   };
 
+  const rootClass = isTauri
+      ? "w-screen h-screen bg-[#F4F6FB] flex"
+      : "min-h-screen bg-[#050816] flex items-center justify-center";
+
+  const shellClass = isTauri
+      ? "flex-1 bg-[#F4F6FB] flex flex-col relative overflow-hidden"
+      : "w-[1100px] h-[680px] bg-[#F4F6FB] rounded-[32px] shadow-[0_24px_80px_rgba(15,23,42,0.45)] overflow-hidden flex flex-col relative";
+
   return (
-      <div className="min-h-screen bg-[#050816] flex items-center justify-center">
-        <div className="w-[1100px] h-[680px] bg-[#F4F6FB] rounded-[32px] shadow-[0_24px_80px_rgba(15,23,42,0.45)] overflow-hidden flex flex-col relative">
+      <div className={rootClass}>
+        <div className={shellClass}>
           {/* Dev mode switch */}
           <div className="h-10 bg-[#020617] text-[11px] text-white/70 flex items-center justify-center gap-3">
             <span className="opacity-60">Preview:</span>
@@ -421,7 +427,7 @@ const App: React.FC = () => {
 const buttonCls = (active: boolean) =>
     `px-3 py-1 rounded-full border text-[11px] ${
         active
-            ? "bg-white text:black border-white"
+            ? "bg-white text-black border-white"
             : "border-white/20 hover:bg-white/10"
     }`;
 
