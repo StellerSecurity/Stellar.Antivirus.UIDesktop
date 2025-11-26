@@ -16,6 +16,8 @@ use tauri_plugin_autostart::MacosLauncher;
 use rusqlite::{Connection, params};
 use sha2::{Sha256, Digest};
 use hex;
+use std::path::Path;
+
 
 // ---- Global state ----
 
@@ -87,6 +89,15 @@ struct ThreatSignature {
 }
 
 // ---- Helper paths ----
+
+fn is_test_filename(path: &Path) -> bool {
+    if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+        let lower = name.to_lowercase();
+        // Fang fx "stellar-test.bin" (du kan tilføje flere mønstre senere)
+        return lower == "stellar-test.bin" || lower == "stellar_test.bin";
+    }
+    false
+}
 
 fn quarantine_root() -> PathBuf {
     let base_dir = dirs::data_dir()
@@ -262,6 +273,20 @@ async fn fake_full_scan(app: AppHandle) -> Result<(), String> {
 
     let _ = app.emit("scan_finished", ScanFinishedPayload { threats });
 
+    Ok(())
+}
+
+#[tauri::command]
+async fn delete_files(paths: Vec<String>) -> Result<(), String> {
+    for p in paths {
+        let path = Path::new(&p);
+        if path.exists() {
+            if let Err(e) = fs::remove_file(path) {
+                eprintln!("Failed to delete file {}: {}", p, e);
+                // Vi fortsætter, selvom en fil fejler
+            }
+        }
+    }
     Ok(())
 }
 
@@ -527,6 +552,7 @@ pub fn run() {
             restore_from_quarantine,
             delete_quarantine_files,
             update_threat_db,
+            delete_files
         ])
         .setup(|app| {
             if let Err(e) = init_db() {

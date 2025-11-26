@@ -42,6 +42,10 @@ const isTauri =
     typeof window !== "undefined" &&
     !!(window as any).__TAURI_INTERNALS__; // v2-safe check
 
+const DEFAULT_LOGS: ScanLogEntry[] = [];
+
+const DEFAULT_THREATS: Threat[] = [];
+
 const App: React.FC = () => {
     const [view, setView] = useState<View>(() => {
         if (typeof window !== "undefined") {
@@ -51,10 +55,31 @@ const App: React.FC = () => {
         return "register";
     });
     const [status, setStatus] = useState<ProtectionStatus>("protected");
-    const [realtimeEnabled, setRealtimeEnabled] = useState<boolean>(true);
+    const [realtimeEnabled, setRealtimeEnabled] = useState<boolean>(() => {
+        if (typeof window === "undefined") return true;
 
-    const [logs, setLogs] = useState<ScanLogEntry[]>([
-    ]);
+        const raw = window.localStorage.getItem("stellar_realtime_enabled_v1");
+        if (raw === "0") return false;
+        return true; // default: enabled
+    });
+
+    const [logs, setLogs] = useState<ScanLogEntry[]>(() => {
+        if (typeof window === "undefined") {
+            return DEFAULT_LOGS;
+        }
+
+        try {
+            const raw = window.localStorage.getItem("stellar_logs_v1");
+            if (!raw) return DEFAULT_LOGS;
+
+            const parsed = JSON.parse(raw);
+            if (!Array.isArray(parsed)) return DEFAULT_LOGS;
+
+            return parsed as ScanLogEntry[];
+        } catch {
+            return DEFAULT_LOGS;
+        }
+    });
 
     const [scanProgress, setScanProgress] = useState<ScanProgress>({
         current: 0,
@@ -66,23 +91,50 @@ const App: React.FC = () => {
     const [pendingRealtimeValue, setPendingRealtimeValue] = useState<boolean | null>(null);
 
     const [showThreatsModal, setShowThreatsModal] = useState(false);
-    const [threats, setThreats] = useState<Threat[]>([]);
+    const [threats, setThreats] = useState<Threat[]>(() => {
+        if (typeof window === "undefined") {
+            return DEFAULT_THREATS;
+        }
+
+        try {
+            const raw = window.localStorage.getItem("stellar_threats_v1");
+            if (!raw) return DEFAULT_THREATS;
+
+            const parsed = JSON.parse(raw);
+            if (!Array.isArray(parsed)) return DEFAULT_THREATS;
+
+            return parsed as Threat[];
+        } catch {
+            return DEFAULT_THREATS;
+        }
+    });
+
 
     const [quarantine, setQuarantine] = useState<QuarantineEntry[]>([]);
     const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
     const [showDeleteModal, setShowDeleteModal] = useState(false);
 
+
+
     useEffect(() => {
         if (!isTauri) return;
 
-        (async () => {
+        let cancelled = false;
+
+        const syncThreatDb = async () => {
+            if (cancelled) return;
+
             try {
                 const res = await fetch(
                     "https://stellarantivirusthreatdb.blob.core.windows.net/threat-db/v1/threats.json"
                 );
 
                 if (!res.ok) {
-                    console.error("Failed to fetch threat DB:", res.status, res.statusText);
+                    console.error(
+                        "Failed to fetch threat DB:",
+                        res.status,
+                        res.statusText
+                    );
                     return;
                 }
 
@@ -90,12 +142,32 @@ const App: React.FC = () => {
 
                 await invoke("update_threat_db", { threatsJson: jsonText });
 
-                console.log("Threat DB updated from Azure");
+                console.log("Threat DB updated from Azure (auto-sync)");
             } catch (err) {
                 console.error("Error updating threat DB:", err);
             }
-        })();
+        };
+
+        syncThreatDb();
+
+        const intervalId = setInterval(syncThreatDb, 60 * 60 * 1000);
+
+        return () => {
+            cancelled = true;
+            clearInterval(intervalId);
+        };
     }, []);
+
+
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+
+        try {
+            window.localStorage.setItem("stellar_threats_v1", JSON.stringify(threats));
+        } catch (err) {
+            console.error("Failed to persist threats:", err);
+        }
+    }, [threats]);
 
     useEffect(() => {
         if (!isTauri) return;
@@ -112,6 +184,29 @@ const App: React.FC = () => {
             }
         })();
     }, []);
+
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+
+        try {
+            window.localStorage.setItem("stellar_logs_v1", JSON.stringify(logs));
+        } catch (err) {
+            console.error("Failed to persist logs:", err);
+        }
+    }, [logs]);
+
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+
+        try {
+            window.localStorage.setItem(
+                "stellar_realtime_enabled_v1",
+                realtimeEnabled ? "1" : "0"
+            );
+        } catch (err) {
+            console.error("Failed to persist realtimeEnabled:", err);
+        }
+    }, [realtimeEnabled]);
 
     useEffect(() => {
         if (!isTauri) return;
@@ -134,6 +229,7 @@ const App: React.FC = () => {
             const payload = event.payload as any;
             const threatsArray = (payload.threats as [string, string][]) || [];
 
+            // Opdatér status efter scan
             setStatus(realtimeEnabled ? "protected" : "not_protected");
 
             if (threatsArray.length > 0) {
@@ -152,27 +248,58 @@ const App: React.FC = () => {
                 setThreats(mapped);
                 setShowThreatsModal(true);
 
-                setLogs((prev) => [
-                    {
+                setLogs((prev) => {
+                    const timestamp = new Date().toISOString().slice(0, 16).replace("T", " ");
+                    const details = `${mapped.length} threats were found in system scan.`;
+
+                    const newEntry: ScanLogEntry = {
                         id: prev.length + 1,
-                        timestamp: new Date().toISOString().slice(0, 16).replace("T", " "),
+                        timestamp,
                         scan_type: "full_scan",
                         result: "threats_found",
-                        details: `${mapped.length} threats were found in system scan.`,
-                    },
-                    ...prev,
-                ]);
+                        details,
+                    };
+
+                    const last = prev[0];
+                    if (
+                        last &&
+                        last.scan_type === newEntry.scan_type &&
+                        last.result === newEntry.result &&
+                        last.details === newEntry.details &&
+                        last.timestamp === newEntry.timestamp
+                    ) {
+                        // Hvis sidste log er identisk, så lad være med at tilføje igen
+                        return prev;
+                    }
+
+                    return [newEntry, ...prev];
+                });
             } else {
-                setLogs((prev) => [
-                    {
+                setLogs((prev) => {
+                    const timestamp = new Date().toISOString().slice(0, 16).replace("T", " ");
+                    const details = "Full system scan completed. No threats found.";
+
+                    const newEntry: ScanLogEntry = {
                         id: prev.length + 1,
-                        timestamp: new Date().toISOString().slice(0, 16).replace("T", " "),
+                        timestamp,
                         scan_type: "full_scan",
                         result: "clean",
-                        details: "Full system scan completed. No threats found.",
-                    },
-                    ...prev,
-                ]);
+                        details,
+                    };
+
+                    const last = prev[0];
+                    if (
+                        last &&
+                        last.scan_type === newEntry.scan_type &&
+                        last.result === newEntry.result &&
+                        last.details === newEntry.details &&
+                        last.timestamp === newEntry.timestamp
+                    ) {
+                        return prev;
+                    }
+
+                    return [newEntry, ...prev];
+                });
             }
 
             setScanProgress({ current: 0, total: 0, file: "" });
@@ -186,7 +313,9 @@ const App: React.FC = () => {
         };
     }, [realtimeEnabled]);
 
+
     // Lyt efter realtime file events (FSEvents/inotify) og coalescér spam
+    // Lyt efter realtime file events (FSEvents/inotify) – men log ikke i Activity
     useEffect(() => {
         if (!isTauri) return;
 
@@ -194,30 +323,9 @@ const App: React.FC = () => {
 
         listen("realtime_file_event", (event) => {
             const payload = event.payload as any;
-            const now = new Date().toISOString().slice(0, 16).replace("T", " ");
-            const details = `Real-time protection observed ${payload.event} on ${payload.file}`;
-
-            setLogs((prev) => {
-                const last = prev[0];
-                if (
-                    last &&
-                    last.scan_type === "realtime" &&
-                    last.details === details
-                ) {
-                    return prev;
-                }
-
-                return [
-                    {
-                        id: prev.length + 1,
-                        timestamp: now,
-                        scan_type: "realtime",
-                        result: "clean",
-                        details,
-                    },
-                    ...prev,
-                ];
-            });
+            // Hvis du vil debugge, kan du nøjes med console:
+            // console.debug("Realtime file event:", payload);
+            // Men vi rører ikke logs her.
         }).then((fn) => {
             unlisten = fn;
         });
@@ -558,17 +666,26 @@ const App: React.FC = () => {
                                     Cancel
                                 </button>
                                 <button
-                                    onClick={() => {
+                                    onClick={async () => {
                                         if (pendingDeleteId != null) {
                                             const entry = quarantine.find((q) => q.id === pendingDeleteId);
                                             const now = new Date().toISOString().slice(0, 16).replace("T", " ");
 
-                                            // Fjern fra quarantine-listen i UI
+                                            // 1) Hvis vi kører inde i Tauri, så bed backend om at slette filen på disk
+                                            if (isTauri && entry?.originalPath) {
+                                                try {
+                                                    await invoke("delete_files", { paths: [entry.originalPath] });
+                                                } catch (err) {
+                                                    console.error("Failed to delete file on disk:", err);
+                                                }
+                                            }
+
+                                            // 2) Fjern fra UI-quarantine
                                             setQuarantine((prev) =>
                                                 prev.filter((q) => q.id !== pendingDeleteId)
                                             );
 
-                                            // Log handlingen
+                                            // 3) Log handlingen
                                             if (entry) {
                                                 setLogs((prev) => [
                                                     {
