@@ -1,73 +1,192 @@
-# React + TypeScript + Vite
+# **Stellar Antivirus — Swiss-Grade Protection**
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+{Still in work}
 
-Currently, two official plugins are available:
+Stellar Antivirus is a cross-platform security engine built for **Mac, Linux and Windows** (Windows version WIP).  
+It combines a modern UI written in **React + Tailwind** with a high-performance **Tauri/Rust backend**, delivering fast, privacy-focused malware detection with Swiss-grade precision.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+Stellar Antivirus is part of the **Stellar Security** ecosystem — a Swiss company dedicated to protecting everyone's privacy and security.
 
-## React Compiler
+---
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## ✨ Features
 
-## Expanding the ESLint configuration
+### 🔍 **Full System Scan**
+Fast Rust-powered scanning through:
+- Desktop  
+- Documents  
+- Downloads  
+- User-defined paths (coming soon)
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+Matches files against:
+- Local signature DB (SQLite)  
+- SHA-256 threat hashes  
+- Filename rules (test mode)  
+- Cloud-updated DB (Azure Blob Storage)
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+---
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+### 🛡 **Real-Time Protection**
+Monitors files using OS-native APIs:
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+| Platform | API |
+|---------|------|
+| macOS   | FSEvents |
+| Linux   | inotify |
+| Windows | USN Journal (coming) |
+
+Real-time engine:
+- Detects creation/modification  
+- Hashes file instantly  
+- Matches against signature DB  
+- Blocks & quarantines threats  
+- Sends native OS notifications  
+
+---
+
+### 🗃 **Quarantine**
+All detected threats can be:
+- Moved to isolated quarantine folder  
+- Restored later  
+- Permanently deleted  
+
+Every detection is logged in SQLite.
+
+---
+
+### 🔔 **Native Notifications**
+Powered by **Tauri Notification Plugin**  
+Notifications on:
+- Threat blocked (real-time)  
+- Threats found (full scan)  
+- Scan clean  
+- DB sync status  
+
+---
+
+### 🔄 **Automatic Threat DB Updates**
+Threat DB auto-syncs every hour from:
+
+```
+https://stellarantivirusthreatdb.blob.core.windows.net/threat-db/v1/threats.json
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Configurable via `.env`:
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
 ```
+VITE_THREAT_DB_URL="https://stellarantivirusthreatdb.blob.core.windows.net/threat-db/v1/threats.json"
+```
+
+---
+
+### 🚀 **Autostart & Background Mode**
+Starts with the system  
+Runs silently with tray support  
+Realtime engine always active unless disabled
+
+---
+
+### 🧬 **Cross-Platform**
+- Linux  
+- macOS  
+- Windows (coming soon)
+
+---
+
+## 🧩 Tech Stack
+
+### Frontend
+- React 19  
+- Vite  
+- Tailwind CSS  
+- TypeScript  
+
+### Backend
+- Tauri 2  
+- Rust  
+- notify (FS events)  
+- rusqlite  
+- sha2  
+- hex  
+
+---
+
+## 📂 Project Structure
+
+```
+/
+├── src/                       # React UI
+│   ├── components/
+│   ├── screens/
+│   └── App.tsx
+│
+└── src-tauri/
+    ├── src/lib.rs            # Rust backend (scan engine, realtime, DB)
+    ├── tauri.conf.json
+    └── Cargo.toml
+```
+
+---
+
+## 🚀 Development
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+Run dev mode:
+
+```bash
+npm run tauri
+```
+
+Build production binaries:
+
+```bash
+npm run tauri build
+```
+
+---
+
+## 🔐 Security Notes
+- All scanning is local  
+- No user data leaves the device  
+- DB is read-only & cloud-delivered  
+- Quarantine is isolated per-user  
+- Future: signed DB + secure updater  
+
+---
+
+## 🌍 Roadmap
+- [ ] Windows realtime engine (USN Journal)  
+- [ ] Deep Scan mode  
+- [ ] Folder exclusions  
+- [ ] Tauri Updater (auto-updates)  
+- [ ] Threat reputation cloud API  
+- [ ] Signed threat DB  
+- [ ] Behavioral sandbox  
+
+---
+
+## 🛡 About Stellar Security
+Stellar Security is a Swiss cybersecurity company with a single mission:
+
+> *“To protect everyone’s privacy and security.”*
+
+Stellar Antivirus is part of the broader Stellar ecosystem:
+- Stellar Phone  
+- StellarOS  
+- Stellar VPN  
+- Stellar Protect  
+- Stellar Secret  
+- More to come…
+
+---
+
+## 📧 Contact
+
+**Website:** https://stellarsecurity.com  
+**Email:** info@stellarsecurity.com  
+**Signal:** StellarSecurity.30  

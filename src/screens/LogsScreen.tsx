@@ -15,6 +15,7 @@ interface LogsScreenProps {
     onViewThreats: () => void;
     onRestoreQuarantine: (id: number) => void;
     onDeleteQuarantine: (id: number) => void;
+    onClearLogs: () => void;
 }
 
 const LogsScreen: React.FC<LogsScreenProps> = ({
@@ -23,10 +24,13 @@ const LogsScreen: React.FC<LogsScreenProps> = ({
                                                    onViewThreats,
                                                    onRestoreQuarantine,
                                                    onDeleteQuarantine,
+                                                   onClearLogs,
                                                }) => {
     const [activeTab, setActiveTab] = useState<"activity" | "quarantine">(
         "activity"
     );
+
+    const hasLogs = logs.length > 0;
 
     return (
         <div className="h-full flex flex-col pt-6">
@@ -40,12 +44,26 @@ const LogsScreen: React.FC<LogsScreenProps> = ({
                         Review recent scans and files moved to quarantine.
                     </p>
                 </div>
-                <button
-                    onClick={onViewThreats}
-                    className="px-3 h-9 rounded-full text-xs font-semibold bg-[#1D4ED8] text-white shadow-[0_10px_30px_rgba(37,99,235,0.5)] hover:bg-[#1E40AF]"
-                >
-                    View detected threats
-                </button>
+                <div className="flex items-center gap-2">
+                    {/* Clear logs – kun relevant for Activity tab */}
+                    <button
+                        onClick={onClearLogs}
+                        disabled={!hasLogs}
+                        className={`px-3 h-9 rounded-full text-xs font-medium border text-[#111827] ${
+                            hasLogs
+                                ? "border-[#E5E7EB] bg-white hover:bg-[#F3F4F6]"
+                                : "border-[#E5E7EB] bg-[#F9FAFB] text-[#9CA3AF] cursor-not-allowed"
+                        }`}
+                    >
+                        Clear logs
+                    </button>
+                    <button
+                        onClick={onViewThreats}
+                        className="px-3 h-9 rounded-full text-xs font-semibold bg-[#1D4ED8] text-white shadow-[0_10px_30px_rgba(37,99,235,0.5)] hover:bg-[#1E40AF]"
+                    >
+                        View detected threats
+                    </button>
+                </div>
             </div>
 
             {/* Tabs */}
@@ -104,21 +122,23 @@ const ActivityList: React.FC<{ logs: ScanLogEntry[] }> = ({ logs }) => {
                             className="flex items-start justify-between rounded-2xl border border-[#E5E7EB] px-4 py-3"
                         >
                             <div className="flex items-start gap-3">
-                <span
-                    className={`mt-1 w-2 h-2 rounded-full ${
-                        isError ? "bg-[#DC2626]" : "bg-[#16A34A]"
-                    }`}
-                />
+                                <span
+                                    className={`mt-1 w-2 h-2 rounded-full ${
+                                        isError ? "bg-[#DC2626]" : "bg-[#16A34A]"
+                                    }`}
+                                />
                                 <div>
                                     <div className="flex items-center gap-2 mb-1">
-                    <span className="text-[11px] font-semibold uppercase tracking-wide text-[#6B7280]">
-                      {isRealtime ? "REAL-TIME" : "FULL SCAN"}
-                    </span>
+                                        <span className="text-[11px] font-semibold uppercase tracking-wide text-[#6B7280]">
+                                            {isRealtime ? "REAL-TIME" : "FULL SCAN"}
+                                        </span>
                                         <span className="text-[11px] text-[#9CA3AF]">
-                      {log.timestamp}
-                    </span>
+                                            {log.timestamp}
+                                        </span>
                                     </div>
-                                    <p className="text-xs text-[#111827]">{log.details}</p>
+                                    <p className="text-xs text-[#111827]">
+                                        {log.details}
+                                    </p>
                                 </div>
                             </div>
                             <div className="text-[11px] text-[#9CA3AF]">
@@ -132,11 +152,17 @@ const ActivityList: React.FC<{ logs: ScanLogEntry[] }> = ({ logs }) => {
     );
 };
 
-const QuarantineList: React.FC<{
+interface QuarantineListProps {
     entries: QuarantineEntry[];
     onRestore: (id: number) => void;
     onDelete: (id: number) => void;
-}> = ({ entries, onRestore, onDelete }) => {
+}
+
+const QuarantineList: React.FC<QuarantineListProps> = ({
+                                                           entries,
+                                                           onRestore,
+                                                           onDelete,
+                                                       }) => {
     if (!entries.length) {
         return (
             <div className="h-full flex items-center justify-center">
@@ -161,10 +187,9 @@ const QuarantineList: React.FC<{
                     <th className="font-medium px-3">Original location</th>
                     <th className="font-medium px-3">Detection</th>
                     <th className="font-medium px-3 w-[120px]">Quarantined</th>
-                    <th className="font-medium px-3 w-[140px]">Actions</th>
+                    <th className="font-medium px-3 w-[120px]">Actions</th>
                 </tr>
                 </thead>
-
                 <tbody>
                 {entries.map((q) => (
                     <tr
@@ -177,41 +202,36 @@ const QuarantineList: React.FC<{
                                     EXE
                                 </div>
                                 <span className="font-medium line-clamp-1">
-                    {q.fileName || "Unknown file"}
-                  </span>
+                                        {q.fileName || "Unknown file"}
+                                    </span>
                             </div>
                         </td>
-
                         <td className="px-3 py-2 align-top">
-                <span className="text-[11px] text-[#6B7280] break-all">
-                  {q.originalPath}
-                </span>
+                                <span className="text-[11px] text-[#6B7280] break-all">
+                                    {q.originalPath}
+                                </span>
                         </td>
-
                         <td className="px-3 py-2 align-top">
-                <span className="text-[11px] text-[#DC2626]">
-                  {q.detection || "Threat"}
-                </span>
+                                <span className="text-[11px] text-[#DC2626]">
+                                    {q.detection || "Threat"}
+                                </span>
                         </td>
-
                         <td className="px-3 py-2 align-top">
-                <span className="text-[11px] text-[#6B7280]">
-                  {q.quarantinedAt}
-                </span>
+                                <span className="text-[11px] text-[#6B7280]">
+                                    {q.quarantinedAt}
+                                </span>
                         </td>
-
                         <td className="px-3 py-2 align-top">
-                            <div className="flex flex-col gap-2 w-[120px]">
+                            <div className="flex flex-col gap-1">
                                 <button
                                     onClick={() => onRestore(q.id)}
-                                    className="w-full px-3 py-1 text-[11px] rounded-full bg-[#F3F4F6] hover:bg-[#E5E7EB] text-[#111827]"
+                                    className="text-[11px] text-[#2563EB] hover:underline text-left"
                                 >
                                     Restore
                                 </button>
-
                                 <button
                                     onClick={() => onDelete(q.id)}
-                                    className="w-full px-3 py-1 text-[11px] rounded-full bg-[#DC2626] text-white hover:bg-[#B91C1C]"
+                                    className="text-[11px] text-[#B91C1C] hover:underline text-left"
                                 >
                                     Delete permanently
                                 </button>

@@ -27,3 +27,4 @@ tauri-plugin-autostart = "2"
 rusqlite = { version = "0.31", features = ["bundled"] }
 sha2 = "0.10"
 hex = "0.4"
+tauri-plugin-notification = "2.3.3"

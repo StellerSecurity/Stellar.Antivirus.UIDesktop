@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_autostart::MacosLauncher;
+use notify::event::{ModifyKind, DataChange, MetadataKind, RenameMode};
+use tauri_plugin_notification::NotificationExt;
 
 // ---- Global state ----
 
@@ -254,37 +256,45 @@ async fn fake_full_scan(app: AppHandle) -> Result<(), String> {
             },
         );
 
-        // 1) Prøv hash-baseret match
-        let mut detected = false;
         if let Some(hash) = sha256_of_file(file) {
             let hash_lower = hash.to_lowercase();
             if let Some(sig) = lookup_threat_by_hash(&hash_lower) {
                 threats.push((sig.name.clone(), file_str.clone()));
                 insert_detection(&file_str, &hash_lower, Some(&sig), "full_scan", "none");
-                detected = true;
             } else if is_test_filename(file) {
-                // 2) Testfil-regel på filnavn
                 let test_name = "Stellar.Test.FileNameRule".to_string();
                 threats.push((test_name.clone(), file_str.clone()));
                 insert_detection(&file_str, &hash_lower, None, "full_scan", "none");
-                detected = true;
             }
         } else if is_test_filename(file) {
-            // Kan ikke hashe, men filnavn matcher vores testregel
             let test_name = "Stellar.Test.FileNameRule".to_string();
             threats.push((test_name.clone(), file_str.clone()));
             insert_detection(&file_str, "<no-hash>", None, "full_scan", "none");
-            detected = true;
-        }
-
-        if !detected {
-            // no-op
         }
 
         thread::sleep(Duration::from_millis(10));
     }
 
-    let _ = app.emit("scan_finished", ScanFinishedPayload { threats });
+    // 👇 clone, så vi stadig kan bruge `threats` bagefter
+    let _ = app.emit(
+        "scan_finished",
+        ScanFinishedPayload {
+            threats: threats.clone(),
+        },
+    );
+
+    // 🔔 Native notification hvis der blev fundet noget
+    if !threats.is_empty() {
+        if let Err(e) = app
+            .notification()
+            .builder()
+            .title("Stellar Antivirus")
+            .body(format!("Detected {} threat(s) in full scan.", threats.len()))
+            .show()
+        {
+            eprintln!("Failed to show scan notification: {e}");
+        }
+    }
 
     Ok(())
 }
@@ -513,8 +523,16 @@ fn start_realtime_watcher(app_handle: AppHandle) {
                 continue;
             }
 
-            let path = &event.paths[0];
+            // Brug altid SIDSTE path – ved rename er det typisk den nye fil
+            let path = match event.paths.last() {
+                Some(p) => p,
+                None => continue,
+            };
+
             let file = path.to_string_lossy().to_string();
+
+            println!("EVENT (runtime): kind={:?}, file={}", event.kind, file);
+
             let kind_str = match &event.kind {
                 EventKind::Create(_) => "create",
                 EventKind::Modify(_) => "modify",
@@ -524,7 +542,7 @@ fn start_realtime_watcher(app_handle: AppHandle) {
             }
             .to_string();
 
-            // 1) Emit realtime event til UI (men du logger den ikke længere i React)
+            // 1) Emit til UI (du kan vælge at ignorere det i React)
             if let Err(e) = app_handle.emit(
                 "realtime_file_event",
                 RealtimeFilePayload {
@@ -535,46 +553,81 @@ fn start_realtime_watcher(app_handle: AppHandle) {
                 eprintln!("failed to emit realtime_file_event: {e}");
             }
 
-            // 2) Kun ved create/modify: hash + threat lookup + test-filnavn
-            if matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_)) {
-                let mut detected_name: Option<String> = None;
-                let mut detected_hash: Option<String> = None;
+            // 2) Simpel relevant filter – Create + Modify + Any
+            let relevant = matches!(
+                event.kind,
+                EventKind::Create(_) | EventKind::Modify(_) | EventKind::Any
+            );
 
-                if let Some(hash) = sha256_of_file(path) {
-                    let hash_lower = hash.to_lowercase();
-                    if let Some(sig) = lookup_threat_by_hash(&hash_lower) {
-                        insert_detection(&file, &hash_lower, Some(&sig), "realtime", "none");
-                        detected_name = Some(sig.name.clone());
-                        detected_hash = Some(hash_lower);
-                    } else if is_test_filename(path) {
-                        let test_name = "Stellar.Test.FileNameRule".to_string();
-                        insert_detection(&file, &hash_lower, None, "realtime", "none");
-                        detected_name = Some(test_name);
-                        detected_hash = Some(hash_lower);
-                    }
+            if !relevant {
+                continue;
+            }
+
+            // Lille pause så editor når at skrive filen færdig
+            thread::sleep(Duration::from_millis(20));
+
+            let mut detected_name: Option<String> = None;
+
+            // Først hash-baseret match
+            if let Some(hash) = sha256_of_file(path) {
+                let hash_lower = hash.to_lowercase();
+
+                if let Some(sig) = lookup_threat_by_hash(&hash_lower) {
+                    println!(
+                        "[Realtime] Threat by hash detected: {} at {}",
+                        sig.name, file
+                    );
+                    insert_detection(&file, &hash_lower, Some(&sig), "realtime", "none");
+                    detected_name = Some(sig.name.clone());
                 } else if is_test_filename(path) {
                     let test_name = "Stellar.Test.FileNameRule".to_string();
-                    insert_detection(&file, "<no-hash>", None, "realtime", "none");
-                    detected_name = Some(test_name);
-                    detected_hash = Some("<no-hash>".to_string());
-                }
-
-                if let Some(name) = detected_name {
-                    let _ = app_handle.emit(
-                        "realtime_threat_detected",
-                        ScanFinishedPayload {
-                            threats: vec![(name, file.clone())],
-                        },
+                    println!(
+                        "[Realtime] Test filename rule matched (hash ok): {}",
+                        file
                     );
+                    insert_detection(&file, &hash_lower, None, "realtime", "none");
+                    detected_name = Some(test_name);
+                }
+            } else if is_test_filename(path) {
+                // Hvis hashing failede, men filnavn matcher vores testregel
+                let test_name = "Stellar.Test.FileNameRule".to_string();
+                println!(
+                    "[Realtime] Test filename rule matched (no hash): {}",
+                    file
+                );
+                insert_detection(&file, "<no-hash>", None, "realtime", "none");
+                detected_name = Some(test_name);
+            }
+
+            if let Some(name) = detected_name {
+                println!(
+                    "[Realtime] Emitting realtime_threat_detected for {} ({})",
+                    file, name
+                );
+
+                let _ = app_handle.emit(
+                    "realtime_threat_detected",
+                    ScanFinishedPayload {
+                        threats: vec![(name, file.clone())],
+                    },
+                );
+
+                // 🔔 Native notification for realtime
+                if let Err(e) = app_handle
+                    .notification()
+                    .builder()
+                    .title("Stellar Antivirus")
+                    .body(format!("Real-time protection blocked: {}", file))
+                    .show()
+                {
+                    eprintln!("Failed to show realtime notification: {e}");
                 }
 
-                if detected_hash.is_some() {
-                    // could extend later for richer payload
-                }
             }
         }
     });
 }
+
 
 // ---- App entry ----
 
@@ -585,6 +638,7 @@ pub fn run() {
             MacosLauncher::LaunchAgent,
             None,
         ))
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             fake_full_scan,
             set_realtime_enabled,

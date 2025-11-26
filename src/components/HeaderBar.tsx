@@ -8,35 +8,36 @@ type StatusChipConfig = {
     dotColor: string;
 };
 
-interface HeaderBarProps {
+type HeaderBarProps = {
     realtimeEnabled: boolean;
-}
+};
 
 const HeaderBar: React.FC<HeaderBarProps> = ({ realtimeEnabled }) => {
-    const STATUS_CHIPS: StatusChipConfig[] = [
-        realtimeEnabled
-            ? {
-                id: "realtime",
-                label: "Real-time protection enabled",
-                bg: "bg-[#ECFDF3]",
-                text: "text-[#166534]",
-                dotColor: "bg-[#22C55E]",
-            }
-            : {
-                id: "realtime",
-                label: "Real-time protection disabled",
-                bg: "bg-[#FEF2F2]",
-                text: "text-[#B91C1C]",
-                dotColor: "bg-[#EF4444]",
-            },
-        {
-            id: "threatdb",
-            label: "Threat DB synced",
-            bg: "bg-[#EFF6FF]",
-            text: "text-[#1D4ED8]",
-            dotColor: "bg-[#3B82F6]",
-        },
-    ];
+    const realtimeChip: StatusChipConfig = realtimeEnabled
+        ? {
+            id: "realtime_on",
+            label: "Real-time protection enabled",
+            bg: "bg-[#ECFDF3]",
+            text: "text-[#166534]",
+            dotColor: "bg-[#22C55E]",
+        }
+        : {
+            id: "realtime_off",
+            label: "Real-time protection disabled",
+            bg: "bg-[#FEF2F2]",
+            text: "text-[#B91C1C]",
+            dotColor: "bg-[#EF4444]",
+        };
+
+    const threatDbChip: StatusChipConfig = {
+        id: "threatdb",
+        label: "Threat DB synced",
+        bg: "bg-[#EFF6FF]",
+        text: "text-[#1D4ED8]",
+        dotColor: "bg-[#3B82F6]",
+    };
+
+    const chips = [realtimeChip, threatDbChip];
 
     return (
         <header className="h-[72px] px-6 border-b border-[#E5E7EB] bg-white flex items-center justify-between">
@@ -54,13 +55,13 @@ const HeaderBar: React.FC<HeaderBarProps> = ({ realtimeEnabled }) => {
             Stellar Antivirus
           </span>
                     <span className="text-[11px] text-[#6B7280]">
-            Swiss-grade protection for Mac, Windows & Linux.
+            Swiss-grade protection for Mac, Windows &amp; Linux.
           </span>
                 </div>
             </div>
 
             <div className="flex items-center gap-3">
-                {STATUS_CHIPS.map((cfg) => (
+                {chips.map((cfg) => (
                     <div
                         key={cfg.id}
                         className={`flex items-center gap-2 px-4 py-2 rounded-full text-xs font-medium ${cfg.bg} ${cfg.text}`}
