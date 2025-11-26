@@ -9,9 +9,8 @@ use std::{
     time::Duration,
 };
 
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use tauri::{AppHandle, Emitter};
-
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
 // global flag der styrer om vi emitter realtime events
@@ -33,6 +32,22 @@ struct ScanFinishedPayload {
 struct RealtimeFilePayload {
     file: String,
     event: String,
+}
+
+#[derive(Deserialize)]
+struct RestoreItem {
+    file_name: String,
+    original_path: String,
+}
+
+// ---- Helpers ----
+
+fn quarantine_root() -> PathBuf {
+    let base_dir = dirs::data_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    base_dir.join("StellarAntivirus").join("Quarantine")
 }
 
 // ---- Commands ----
@@ -103,7 +118,125 @@ fn set_realtime_enabled(enabled: bool) {
     println!("Realtime protection set to: {enabled}");
 }
 
-// ---- Realtime watcher (FSEvents via notify) ----
+#[tauri::command]
+fn quarantine_files(paths: Vec<String>) -> Result<(), String> {
+    let quarantine_root = quarantine_root();
+
+    fs::create_dir_all(&quarantine_root).map_err(|e| {
+        format!("Failed to create quarantine directory: {e}")
+    })?;
+
+    for original in paths {
+        let src = PathBuf::from(&original);
+
+        if !src.exists() {
+            eprintln!("File does not exist, skipping: {original}");
+            continue;
+        }
+
+        let file_name = src
+            .file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new("unknown"));
+
+        let dest = quarantine_root.join(file_name);
+
+        // Hvis der allerede er en fil med samme navn i quarantine, slet den gamle
+        if dest.exists() {
+            if let Err(e) = fs::remove_file(&dest) {
+                eprintln!("failed to remove existing quarantine file {:?}: {e}", dest);
+            }
+        }
+
+        let rename_result = fs::rename(&src, &dest);
+        if let Err(e) = rename_result {
+            eprintln!("rename failed ({src:?} -> {dest:?}): {e}, trying copy+delete");
+            if let Err(e2) = fs::copy(&src, &dest)
+                .and_then(|_| fs::remove_file(&src))
+            {
+                eprintln!("copy+delete also failed for {src:?}: {e2}");
+                return Err(format!(
+                    "Failed to quarantine file {original}: {e2}"
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn restore_from_quarantine(items: Vec<RestoreItem>) -> Result<(), String> {
+    let quarantine_root = quarantine_root();
+
+    for item in items {
+        let src = quarantine_root.join(&item.file_name);
+        if !src.exists() {
+            eprintln!(
+                "quarantine file does not exist for restore: {:?}",
+                src
+            );
+            continue;
+        }
+
+        let dest = PathBuf::from(&item.original_path);
+
+        if let Some(parent) = dest.parent() {
+            if let Err(e) = fs::create_dir_all(parent) {
+                eprintln!("failed to create dest parent dir {:?}: {e}", parent);
+            }
+        }
+
+        // Hvis der allerede ligger noget på original path, så omdøb det til .stellar_backup
+        if dest.exists() {
+            let backup = dest
+                .with_extension("stellar_backup");
+            if let Err(e) = fs::rename(&dest, &backup) {
+                eprintln!(
+                    "failed to backup existing file before restore ({dest:?} -> {backup:?}): {e}"
+                );
+            }
+        }
+
+        let rename_result = fs::rename(&src, &dest);
+        if let Err(e) = rename_result {
+            eprintln!("restore rename failed ({src:?} -> {dest:?}): {e}, trying copy+delete");
+            if let Err(e2) = fs::copy(&src, &dest)
+                .and_then(|_| fs::remove_file(&src))
+            {
+                eprintln!("restore copy+delete also failed for {src:?}: {e2}");
+                return Err(format!(
+                    "Failed to restore file {} to {}: {e2}",
+                    item.file_name,
+                    item.original_path
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_quarantine_files(file_names: Vec<String>) -> Result<(), String> {
+    let quarantine_root = quarantine_root();
+
+    for name in file_names {
+        let path = quarantine_root.join(&name);
+        if !path.exists() {
+            eprintln!("quarantine file does not exist for delete: {:?}", path);
+            continue;
+        }
+
+        if let Err(e) = fs::remove_file(&path) {
+            eprintln!("failed to delete quarantine file {:?}: {e}", path);
+            return Err(format!("Failed to delete quarantine file {}: {e}", name));
+        }
+    }
+
+    Ok(())
+}
+
+// ---- Realtime watcher ----
 
 fn start_realtime_watcher(app_handle: AppHandle) {
     thread::spawn(move || {
@@ -180,7 +313,10 @@ pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             fake_full_scan,
-            set_realtime_enabled
+            set_realtime_enabled,
+            quarantine_files,
+            restore_from_quarantine,
+            delete_quarantine_files,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
