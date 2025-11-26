@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import Sidebar, {type SidebarView } from "./components/Sidebar";
 import HeaderBar from "./components/HeaderBar";
 import DashboardScreen from "./screens/DashboardScreen";
@@ -6,7 +6,12 @@ import LogsScreen from "./screens/LogsScreen";
 import LoginScreen from "./screens/LoginScreen";
 import RegisterScreen from "./screens/RegisterScreen";
 import SettingsScreen from "./screens/SettingsScreen";
+import ThreatsModal, {type Threat } from "./components/ThreatsModal";
 import type { ProtectionStatus, ScanLogEntry } from "./types";
+
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 
 type View =
     | "antivirus_dashboard"
@@ -15,10 +20,21 @@ type View =
     | "login"
     | "register";
 
+type ScanProgress = {
+  current: number;
+  total: number;
+  file: string;
+};
+
+// Helper: er vi inde i en Tauri desktop-app, eller bare i browser?
+const isTauri =
+    typeof window !== "undefined" && "__TAURI_IPC__" in (window as any);
+
 const App: React.FC = () => {
   const [view, setView] = useState<View>("antivirus_dashboard");
   const [status, setStatus] = useState<ProtectionStatus>("protected");
   const [realtimeEnabled, setRealtimeEnabled] = useState<boolean>(true);
+
   const [logs, setLogs] = useState<ScanLogEntry[]>([
     {
       id: 1,
@@ -32,7 +48,7 @@ const App: React.FC = () => {
       timestamp: "2025-11-25 23:59",
       scan_type: "full_scan",
       result: "threats_found",
-      details: "Full system scan completed. 2 threats were found and removed.",
+      details: "Full system scan completed. 2 threats were found.",
     },
     {
       id: 3,
@@ -50,21 +66,117 @@ const App: React.FC = () => {
     },
   ]);
 
+  const [scanProgress, setScanProgress] = useState<ScanProgress>({
+    current: 0,
+    total: 0,
+    file: "",
+  });
 
   const [showDisableModal, setShowDisableModal] = useState(false);
-  const [pendingRealtimeValue, setPendingRealtimeValue] = useState<
-      boolean | null
-  >(null);
+  const [pendingRealtimeValue, setPendingRealtimeValue] = useState<boolean | null>(null);
+
+  const [showThreatsModal, setShowThreatsModal] = useState(false);
+  const [threats, setThreats] = useState<Threat[]>([
+    {
+      id: 1,
+      fileName: "invoice_2023.exe",
+      filePath: "C:\\Users\\kalle\\Downloads\\invoice_2023.exe",
+      detection: "Trojan.Generic",
+      recommendedAction: "delete",
+    },
+    {
+      id: 2,
+      fileName: "crack.dll",
+      filePath: "C:\\Games\\SomeGame\\crack.dll",
+      detection: "Riskware",
+      recommendedAction: "quarantine",
+    },
+  ]);
+
+  // Menubar status (kun i Tauri)
+  useEffect(() => {
+    if (!isTauri) return;
+    invoke("set_tray_status", { status }).catch(() => {});
+  }, [status]);
+
+  // Lyt efter fake scanning-events fra Tauri (scan_progress + scan_finished)
+  useEffect(() => {
+    if (!isTauri) return;
+
+    let unlistenProgress: UnlistenFn | null = null;
+    let unlistenFinished: UnlistenFn | null = null;
+
+    listen("scan_progress", (event) => {
+      const payload = event.payload as any;
+      setScanProgress({
+        current: payload.current ?? 0,
+        total: payload.total ?? 0,
+        file: payload.file ?? "",
+      });
+    }).then((fn) => {
+      unlistenProgress = fn;
+    });
+
+    listen("scan_finished", (event) => {
+      const payload = event.payload as any;
+      const threatsArray = (payload.threats as [string, string][]) || [];
+
+      setStatus(realtimeEnabled ? "protected" : "not_protected");
+
+      if (threatsArray.length > 0) {
+        const mapped: Threat[] = threatsArray.map((t, idx) => ({
+          id: idx + 1,
+          fileName: t[0],
+          filePath: t[1],
+          detection: "Malware.Generic",
+          recommendedAction: "delete",
+        }));
+
+        setThreats(mapped);
+        setShowThreatsModal(true);
+
+        setLogs((prev) => [
+          {
+            id: prev.length + 1,
+            timestamp: new Date().toISOString().slice(0, 16).replace("T", " "),
+            scan_type: "full_scan",
+            result: "threats_found",
+            details: `${mapped.length} threats were found in system scan.`,
+          },
+          ...prev,
+        ]);
+      } else {
+        setLogs((prev) => [
+          {
+            id: prev.length + 1,
+            timestamp: new Date().toISOString().slice(0, 16).replace("T", " "),
+            scan_type: "full_scan",
+            result: "clean",
+            details: "Full system scan completed. No threats found.",
+          },
+          ...prev,
+        ]);
+      }
+
+      // reset progress efter scan
+      setScanProgress({ current: 0, total: 0, file: "" });
+    }).then((fn) => {
+      unlistenFinished = fn;
+    });
+
+    return () => {
+      if (unlistenProgress) unlistenProgress();
+      if (unlistenFinished) unlistenFinished();
+    };
+  }, [realtimeEnabled]);
 
   const handleToggleRealtime = (enabled: boolean) => {
-    // Hvis vi er ved at slå fra → vis modal først
     if (!enabled) {
       setPendingRealtimeValue(false);
       setShowDisableModal(true);
       return;
     }
 
-    // Slå til med det samme
     setRealtimeEnabled(true);
     setStatus("protected");
     setLogs((prev) => [
@@ -103,26 +215,52 @@ const App: React.FC = () => {
     setPendingRealtimeValue(null);
   };
 
-  const handleFullScan = () => {
+  const handleFullScan = async () => {
     if (status === "scanning") return;
+
     setStatus("scanning");
+    setScanProgress({ current: 0, total: 0, file: "" });
 
-    const startedAt = new Date();
-    const timestamp = startedAt.toISOString().slice(0, 16).replace("T", " ");
+    // Hvis vi kører som ren web (ikke Tauri) → fake 2 sekunders scan
+    if (!isTauri) {
+      const timestamp = new Date().toISOString().slice(0, 16).replace("T", " ");
 
-    setTimeout(() => {
+      setTimeout(() => {
+        setStatus(realtimeEnabled ? "protected" : "not_protected");
+        setLogs((prev) => [
+          {
+            id: prev.length + 1,
+            timestamp,
+            scan_type: "full_scan",
+            result: "clean",
+            details: "Full system scan completed. No threats found (web preview mode).",
+          },
+          ...prev,
+        ]);
+        setScanProgress({ current: 0, total: 0, file: "" });
+      }, 2000);
+
+      return;
+    }
+
+    // Rigtig fake_full_scan via Tauri backend
+    try {
+      await invoke("fake_full_scan");
+    } catch (err) {
+      console.error("Scan error:", err);
       setStatus(realtimeEnabled ? "protected" : "not_protected");
       setLogs((prev) => [
         {
           id: prev.length + 1,
-          timestamp,
+          timestamp: new Date().toISOString().slice(0, 16).replace("T", " "),
           scan_type: "full_scan",
           result: "clean",
-          details: "Full system scan completed. No threats found.",
+          details: "Scan failed or Tauri backend not available.",
         },
         ...prev,
       ]);
-    }, 2000);
+      setScanProgress({ current: 0, total: 0, file: "" });
+    }
   };
 
   const lastFullScan =
@@ -144,6 +282,29 @@ const App: React.FC = () => {
     if (v === "dashboard") setView("antivirus_dashboard");
     else if (v === "logs") setView("antivirus_logs");
     else setView("antivirus_settings");
+  };
+
+  const handleOpenThreatsModal = () => {
+    setShowThreatsModal(true);
+  };
+
+  const handleRemoveThreats = (ids: number[]) => {
+    const removedCount = ids.length;
+
+    setThreats((prev) => prev.filter((t) => !ids.includes(t.id)));
+
+    setLogs((prev) => [
+      {
+        id: prev.length + 1,
+        timestamp: new Date().toISOString().slice(0, 16).replace("T", " "),
+        scan_type: "full_scan",
+        result: "clean",
+        details: `${removedCount} threat${removedCount === 1 ? "" : "s"} were removed by Stellar Antivirus.`,
+      },
+      ...prev,
+    ]);
+
+    setShowThreatsModal(false);
   };
 
   return (
@@ -201,9 +362,13 @@ const App: React.FC = () => {
                         onFullScan={handleFullScan}
                         lastScan={lastFullScan}
                         recentLogs={logs.slice(0, 3)}
+                        onOpenActivityLog={() => setView("antivirus_logs")}
+                        scanProgress={scanProgress}
                     />
                 )}
-                {view === "antivirus_logs" && <LogsScreen logs={logs} />}
+                {view === "antivirus_logs" && (
+                    <LogsScreen logs={logs} onViewThreats={handleOpenThreatsModal} />
+                )}
                 {view === "antivirus_settings" && <SettingsScreen />}
                 {view === "login" && <LoginScreen />}
                 {view === "register" && <RegisterScreen />}
@@ -213,7 +378,7 @@ const App: React.FC = () => {
 
           {/* Modal: disable real-time */}
           {showDisableModal && (
-              <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+              <div className="absolute inset-0 bg-black/40 flex items-center justify-center z-40">
                 <div className="w-[380px] bg-white rounded-3xl shadow-[0_20px_60px_rgba(15,23,42,0.5)] px-6 py-6">
                   <h3 className="text-sm font-semibold text-[#111827] mb-2">
                     Turn off real-time protection?
@@ -240,6 +405,14 @@ const App: React.FC = () => {
                 </div>
               </div>
           )}
+
+          {/* Modal: threats */}
+          <ThreatsModal
+              open={showThreatsModal}
+              threats={threats}
+              onClose={() => setShowThreatsModal(false)}
+              onRemove={handleRemoveThreats}
+          />
         </div>
       </div>
   );
@@ -248,7 +421,7 @@ const App: React.FC = () => {
 const buttonCls = (active: boolean) =>
     `px-3 py-1 rounded-full border text-[11px] ${
         active
-            ? "bg-white text-black border-white"
+            ? "bg-white text:black border-white"
             : "border-white/20 hover:bg-white/10"
     }`;
 

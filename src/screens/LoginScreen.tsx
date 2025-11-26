@@ -1,54 +1,89 @@
 import React from "react";
+import type { ScanLogEntry } from "../types";
 
-const LoginScreen: React.FC = () => {
+interface Props {
+    logs: ScanLogEntry[];
+    onViewThreats?: () => void;
+}
+
+const LogsScreen: React.FC<Props> = ({ logs, onViewThreats }) => {
     return (
-        <div className="min-h-full flex items-center justify-center">
-            <div className="w-[420px] bg-white rounded-[24px] shadow-[0_18px_50px_rgba(15,23,42,0.12)] px-8 py-8">
-                <h2 className="text-xl font-semibold text-[#0B1240] mb-2">
-                    Log in to Stellar
-                </h2>
-                <p className="text-xs text-[#6B7280] mb-6">
-                    Use your Stellar ID to access your devices and subscriptions.
-                </p>
+        <div className="pt-6 flex flex-col gap-4">
+            <h2 className="text-lg font-semibold text-[#111827] mb-1">
+                Activity Log
+            </h2>
+            <p className="text-xs text-[#6B7280] mb-2">
+                Recent scans and real-time protection events on this device.
+            </p>
 
-                <div className="space-y-4">
-                    <div className="space-y-1">
-                        <label className="text-xs font-medium text-[#4B5563]">
-                            Email
-                        </label>
-                        <input
-                            type="email"
-                            className="w-full h-10 rounded-xl border border-[#E5E7EB] px-3 text-sm outline-none focus:ring-2 focus:ring-[#2563EB] focus:border-[#2563EB]"
-                            placeholder="you@example.com"
-                        />
-                    </div>
-
-                    <div className="space-y-1">
-                        <label className="text-xs font-medium text-[#4B5563]">
-                            Password
-                        </label>
-                        <input
-                            type="password"
-                            className="w-full h-10 rounded-xl border border-[#E5E7EB] px-3 text-sm outline-none focus:ring-2 focus:ring-[#2563EB] focus:border-[#2563EB]"
-                            placeholder="••••••••••"
-                        />
-                        <button className="mt-1 text-[11px] text-[#2563EB]">
-                            Forgot password?
-                        </button>
-                    </div>
-
-                    <button className="w-full h-10 rounded-full bg-[#2563EB] text-white text-sm font-semibold shadow-[0_12px_30px_rgba(37,99,235,0.5)] mt-2">
-                        Log in
-                    </button>
+            {logs.length === 0 && (
+                <div className="mt-4 text-xs text-[#9CA3AF]">
+                    No activity yet. Run a full scan to create your first log entry.
                 </div>
+            )}
 
-                <div className="mt-6 text-xs text-center text-[#6B7280]">
-                    Don’t have a Stellar ID?{" "}
-                    <span className="text-[#2563EB]">Create one</span>
+            <div className="space-y-3">
+                {logs.map((log) => (
+                    <LogCard
+                        key={log.id}
+                        entry={log}
+                        onViewThreats={
+                            log.result === "threats_found" ? onViewThreats : undefined
+                        }
+                    />
+                ))}
+            </div>
+        </div>
+    );
+};
+
+const LogCard: React.FC<{
+    entry: ScanLogEntry;
+    onViewThreats?: () => void;
+}> = ({ entry, onViewThreats }) => {
+    const isError = entry.result === "threats_found";
+    const isRealtime = entry.scan_type === "realtime";
+
+    const iconBg = isError ? "bg-[#FEE2E2]" : "bg-[#DCFCE7]";
+    const iconDot = isError ? "bg-[#EF4444]" : "bg-[#22C55E]";
+
+    return (
+        <div className="bg-white rounded-[20px] shadow-[0_12px_30px_rgba(15,23,42,0.04)] px-5 py-4 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+                <div className={`w-9 h-9 rounded-full ${iconBg} flex items-center justify-center`}>
+                    <span className={`w-2 h-2 rounded-full ${iconDot}`} />
+                </div>
+                <div>
+                    <div className="text-sm font-medium text-[#111827] flex items-center gap-2">
+            <span>
+              {isRealtime ? "Real-time protection" : "Full scan"}
+            </span>
+                        {isError && onViewThreats && (
+                            <button
+                                onClick={onViewThreats}
+                                className="text-[11px] text-[#2563EB] underline-offset-2 hover:underline"
+                            >
+                                View details
+                            </button>
+                        )}
+                    </div>
+                    <div className="text-xs text-[#6B7280] line-clamp-1">
+                        {entry.details}
+                    </div>
+                </div>
+            </div>
+            <div className="text-right">
+                <div className="text-xs text-[#9CA3AF]">{entry.timestamp}</div>
+                <div
+                    className={`text-[11px] font-medium ${
+                        isError ? "text-[#B91C1C]" : "text-[#16A34A]"
+                    }`}
+                >
+                    {isError ? "Threats found" : "No threats"}
                 </div>
             </div>
         </div>
     );
 };
 
-export default LoginScreen;
+export default LogsScreen;
