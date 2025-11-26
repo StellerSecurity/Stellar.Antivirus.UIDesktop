@@ -8,6 +8,7 @@ import RegisterScreen from "./screens/RegisterScreen";
 import SettingsScreen from "./screens/SettingsScreen";
 import ThreatsModal from "./components/ThreatsModal";
 import type { ProtectionStatus, ScanLogEntry } from "./types";
+import { isEnabled as isAutostartEnabled, enable as enableAutostart } from "@tauri-apps/plugin-autostart";
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -122,6 +123,49 @@ const App: React.FC = () => {
     const [quarantine, setQuarantine] = useState<QuarantineEntry[]>([]);
     const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
     const [showDeleteModal, setShowDeleteModal] = useState(false);
+
+    useEffect(() => {
+        if (!isTauri) return;
+
+        (async () => {
+            try {
+                const res = await fetch(
+                    "https://stellarantivirusthreatdb.blob.core.windows.net/threat-db/v1/threats.json"
+                );
+
+                if (!res.ok) {
+                    console.error("Failed to fetch threat DB:", res.status, res.statusText);
+                    return;
+                }
+
+                const jsonText = await res.text();
+
+                await invoke("update_threat_db", {
+                    threatsJson: jsonText,
+                });
+
+                console.log("Threat DB updated from Azure");
+            } catch (e) {
+                console.error("Error updating threat DB:", e);
+            }
+        })();
+    }, []);
+
+    useEffect(() => {
+        if (!isTauri) return;
+
+        (async () => {
+            try {
+                const alreadyEnabled = await isAutostartEnabled();
+                if (!alreadyEnabled) {
+                    await enableAutostart();
+                    console.log("Stellar Antivirus autostart enabled");
+                }
+            } catch (e) {
+                console.error("Failed to enable autostart", e);
+            }
+        })();
+    }, []);
 
     // Lyt efter fake scanning events (kun i Tauri)
     useEffect(() => {
@@ -544,6 +588,14 @@ const App: React.FC = () => {
         setPendingDeleteId(null);
     };
 
+    const handleLogout = () => {
+        if (typeof window !== "undefined") {
+            window.localStorage.removeItem("stellar_logged_in");
+        }
+        setView("login");
+    };
+
+
     const handleAuthenticated = () => {
         if (typeof window !== "undefined") {
             window.localStorage.setItem("stellar_logged_in", "1");
@@ -562,41 +614,6 @@ const App: React.FC = () => {
     return (
         <div className={rootClass}>
             <div className={shellClass}>
-                {/* Dev mode switch */}
-                <div className="h-10 bg-[#020617] text-[11px] text-white/70 flex items-center justify-center gap-3">
-                    <span className="opacity-60">Preview:</span>
-                    <button
-                        className={buttonCls(view === "antivirus_dashboard")}
-                        onClick={() => setView("antivirus_dashboard")}
-                    >
-                        Antivirus dashboard
-                    </button>
-                    <button
-                        className={buttonCls(view === "antivirus_logs")}
-                        onClick={() => setView("antivirus_logs")}
-                    >
-                        Antivirus logs
-                    </button>
-                    <button
-                        className={buttonCls(view === "antivirus_settings")}
-                        onClick={() => setView("antivirus_settings")}
-                    >
-                        Antivirus settings
-                    </button>
-                    <button
-                        className={buttonCls(view === "login")}
-                        onClick={() => setView("login")}
-                    >
-                        Login flow
-                    </button>
-                    <button
-                        className={buttonCls(view === "register")}
-                        onClick={() => setView("register")}
-                    >
-                        Register flow
-                    </button>
-                </div>
-
                 {/* Main content */}
                 <div className="flex flex-1 min-h-0">
                 {isAntivirusView && (
@@ -628,7 +645,9 @@ const App: React.FC = () => {
                                     onDeleteQuarantine={handleDeleteQuarantine}
                                 />
                             )}
-                            {view === "antivirus_settings" && <SettingsScreen />}
+                            {view === "antivirus_settings" && (
+                                <SettingsScreen onLogout={handleLogout} />
+                            )}
                             {view === "login" && (
                                 <LoginScreen onAuthenticated={handleAuthenticated} />
                             )}

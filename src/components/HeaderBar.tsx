@@ -1,57 +1,68 @@
 import React from "react";
-import type { ProtectionStatus } from "../types";
 
-
-interface Props {
-  status: ProtectionStatus;
-}
-
-const statusConfig: Record<
-  ProtectionStatus,
-  { label: string; bg: string; dot: string; text: string }
-> = {
-  protected: {
-    label: "You are protected",
-    bg: "bg-[#E5F9EB]",
-    dot: "bg-[#22C55E]",
-    text: "text-[#166534]",
-  },
-  not_protected: {
-    label: "Protection disabled",
-    bg: "bg-[#FEE2E2]",
-    dot: "bg-[#EF4444]",
-    text: "text-[#991B1B]",
-  },
-  scanning: {
-    label: "Scanning in progress",
-    bg: "bg-[#DBEAFE]",
-    dot: "bg-[#3B82F6]",
-    text: "text-[#1D4ED8]",
-  },
+type StatusChipConfig = {
+    id: string;
+    label: string;
+    bg: string;
+    text: string;
+    dotColor: string;
 };
 
-const HeaderBar: React.FC<Props> = ({ status }) => {
-  const cfg = statusConfig[status];
+const STATUS_CHIPS: StatusChipConfig[] = [
+    {
+        id: "realtime",
+        label: "Real-time protection enabled",
+        bg: "bg-[#ECFDF3]",
+        text: "text-[#166534]",
+        dotColor: "bg-[#22C55E]",
+    },
+    {
+        id: "threatdb",
+        label: "Threat DB synced",
+        bg: "bg-[#EFF6FF]",
+        text: "text-[#1D4ED8]",
+        dotColor: "bg-[#3B82F6]",
+    },
+];
 
-  return (
-    <header className="h-20 px-8 flex items-center justify-between border-b border-[#E0E4F2] bg-[#F9FAFF]">
-      <div>
-        <h1 className="text-xl font-semibold text-[#111827]">
-          Stellar Antivirus
-        </h1>
-        <p className="text-xs text-[#6B7280]">
-          Protects your Mac and Windows devices in real time.
-        </p>
-      </div>
+const HeaderBar: React.FC = () => {
+    return (
+        <header className="h-[72px] px-6 border-b border-[#E5E7EB] bg-white flex items-center justify-between">
+            <div className="flex items-center gap-3">
+                <img
+                    src="/stellar-logo.svg"
+                    alt="Stellar Antivirus"
+                    className="h-7 w-auto"
+                    onError={(e) => {
+                        // fallback hvis logo ikke findes
+                        (e.currentTarget as HTMLImageElement).style.display = "none";
+                    }}
+                />
+                <div className="flex flex-col">
+          <span className="text-sm font-semibold text-[#111827]">
+            Stellar Antivirus
+          </span>
+                    <span className="text-[11px] text-[#6B7280]">
+            Swiss-grade protection for Mac, Windows & Linux.
+          </span>
+                </div>
+            </div>
 
-      <div
-        className={`flex items-center gap-2 px-4 py-2 rounded-full text-xs font-medium ${cfg.bg} ${cfg.text}`}
-      >
-        <span className={`w-2 h-2 rounded-full ${cfg.dot}`} />
-        <span>{cfg.label}</span>
-      </div>
-    </header>
-  );
+            <div className="flex items-center gap-3">
+                {STATUS_CHIPS.map((cfg) => (
+                    <div
+                        key={cfg.id}
+                        className={`flex items-center gap-2 px-4 py-2 rounded-full text-xs font-medium ${cfg.bg} ${cfg.text}`}
+                    >
+            <span
+                className={`inline-flex h-1.5 w-1.5 rounded-full ${cfg.dotColor}`}
+            />
+                        <span>{cfg.label}</span>
+                    </div>
+                ))}
+            </div>
+        </header>
+    );
 };
 
 export default HeaderBar;

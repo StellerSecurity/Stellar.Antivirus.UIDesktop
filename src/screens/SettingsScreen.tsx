@@ -1,6 +1,10 @@
 import React from "react";
 
-const SettingsScreen: React.FC = () => {
+interface SettingsScreenProps {
+    onLogout?: () => void;
+}
+
+const SettingsScreen: React.FC<SettingsScreenProps> = ({ onLogout }) => {
     // Demo-data – kan senere hentes fra backend
     const stellarId = "bc@stellarsecurity.com";
     const expiry = "2026-01-15";
@@ -57,7 +61,7 @@ const SettingsScreen: React.FC = () => {
             </div>
 
             {/* Help & support */}
-            <div className="bg-white rounded-[24px] shadow-[0_16px_40px_rgba(15,23,42,0.06)] px-6 py-5">
+            <div className="bg.white bg-white rounded-[24px] shadow-[0_16px_40px_rgba(15,23,42,0.06)] px-6 py-5">
                 <div className="flex items-center justify-between mb-4">
                     <div>
                         <h3 className="text-sm font-semibold text-[#111827]">
@@ -98,6 +102,25 @@ const SettingsScreen: React.FC = () => {
                         </div>
                     </div>
                 </div>
+            </div>
+
+            {/* Log out card */}
+            <div className="bg-white rounded-[24px] shadow-[0_16px_40px_rgba(15,23,42,0.06)] px-6 py-5 flex items-center justify-between">
+                <div>
+                    <div className="text-sm font-semibold text-[#111827] mb-1">
+                        Log out
+                    </div>
+                    <p className="text-[11px] text-[#6B7280]">
+                        Sign out of Stellar Antivirus on this device. You can log in again
+                        with your Stellar ID at any time.
+                    </p>
+                </div>
+                <button
+                    onClick={onLogout}
+                    className="px-4 h-9 rounded-full text-xs font-semibold bg-[#DC2626] text-white shadow-[0_10px_30px_rgba(220,38,38,0.6)] hover:bg-[#B91C1C]"
+                >
+                    Log out
+                </button>
             </div>
         </div>
     );

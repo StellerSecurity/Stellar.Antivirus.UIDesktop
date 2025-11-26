@@ -11,3 +11,4 @@ export interface ScanLogEntry {
   result: ScanResult;
   details: string;
 }
+a
