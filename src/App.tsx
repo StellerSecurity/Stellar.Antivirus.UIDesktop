@@ -7,7 +7,7 @@ import LoginScreen from "./screens/LoginScreen";
 import RegisterScreen from "./screens/RegisterScreen";
 import SettingsScreen from "./screens/SettingsScreen";
 import ThreatsModal from "./components/ThreatsModal";
-import type { ProtectionStatus, ScanLogEntry } from "./types";
+import type { ProtectionStatus, ScanLogEntry, Threat } from "./types";
 import { isEnabled as isAutostartEnabled, enable as enableAutostart } from "@tauri-apps/plugin-autostart";
 
 import { invoke } from "@tauri-apps/api/core";
@@ -23,19 +23,11 @@ type View =
 
 type SidebarView = "dashboard" | "logs" | "settings";
 
-type ScanProgress = {
+interface ScanProgress {
     current: number;
     total: number;
     file: string;
-};
-
-type Threat = {
-    id: number;
-    fileName: string;
-    filePath: string;
-    detection: string;
-    recommendedAction: "delete" | "quarantine" | "ignore" | string;
-};
+}
 
 type QuarantineEntry = {
     id: number;
@@ -62,34 +54,6 @@ const App: React.FC = () => {
     const [realtimeEnabled, setRealtimeEnabled] = useState<boolean>(true);
 
     const [logs, setLogs] = useState<ScanLogEntry[]>([
-        {
-            id: 1,
-            timestamp: "2025-11-26 00:05",
-            scan_type: "realtime",
-            result: "clean",
-            details: "Blocked suspicious script from modifying system files.",
-        },
-        {
-            id: 2,
-            timestamp: "2025-11-25 23:59",
-            scan_type: "full_scan",
-            result: "threats_found",
-            details: "Full system scan completed. 2 threats were found.",
-        },
-        {
-            id: 3,
-            timestamp: "2025-11-25 22:31",
-            scan_type: "realtime",
-            result: "clean",
-            details: "Real-time protection scanned 14 new files.",
-        },
-        {
-            id: 4,
-            timestamp: "2025-11-25 20:01",
-            scan_type: "full_scan",
-            result: "clean",
-            details: "Scheduled scan completed. No threats found.",
-        },
     ]);
 
     const [scanProgress, setScanProgress] = useState<ScanProgress>({
@@ -98,27 +62,11 @@ const App: React.FC = () => {
         file: "",
     });
 
-    const [showDisableModal, setShowDisableModal] = useState(false);
-    const [pendingRealtimeValue, setPendingRealtimeValue] =
-        useState<boolean | null>(null);
+    const [showRealtimeConfirm, setShowRealtimeConfirm] = useState(false);
+    const [pendingRealtimeValue, setPendingRealtimeValue] = useState<boolean | null>(null);
 
     const [showThreatsModal, setShowThreatsModal] = useState(false);
-    const [threats, setThreats] = useState<Threat[]>([
-        {
-            id: 1,
-            fileName: "invoice_2023.exe",
-            filePath: "C:\\Users\\kalle\\Downloads\\invoice_2023.exe",
-            detection: "Trojan.Generic",
-            recommendedAction: "delete",
-        },
-        {
-            id: 2,
-            fileName: "crack.dll",
-            filePath: "C:\\Games\\SomeGame\\crack.dll",
-            detection: "Riskware",
-            recommendedAction: "quarantine",
-        },
-    ]);
+    const [threats, setThreats] = useState<Threat[]>([]);
 
     const [quarantine, setQuarantine] = useState<QuarantineEntry[]>([]);
     const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
@@ -140,13 +88,11 @@ const App: React.FC = () => {
 
                 const jsonText = await res.text();
 
-                await invoke("update_threat_db", {
-                    threatsJson: jsonText,
-                });
+                await invoke("update_threat_db", { threatsJson: jsonText });
 
                 console.log("Threat DB updated from Azure");
-            } catch (e) {
-                console.error("Error updating threat DB:", e);
+            } catch (err) {
+                console.error("Error updating threat DB:", err);
             }
         })();
     }, []);
@@ -156,18 +102,17 @@ const App: React.FC = () => {
 
         (async () => {
             try {
-                const alreadyEnabled = await isAutostartEnabled();
-                if (!alreadyEnabled) {
+                const enabled = await isAutostartEnabled();
+                if (!enabled) {
                     await enableAutostart();
-                    console.log("Stellar Antivirus autostart enabled");
+                    console.log("Autostart enabled for Stellar Antivirus");
                 }
-            } catch (e) {
-                console.error("Failed to enable autostart", e);
+            } catch (err) {
+                console.error("Failed to configure autostart:", err);
             }
         })();
     }, []);
 
-    // Lyt efter fake scanning events (kun i Tauri)
     useEffect(() => {
         if (!isTauri) return;
 
@@ -192,12 +137,16 @@ const App: React.FC = () => {
             setStatus(realtimeEnabled ? "protected" : "not_protected");
 
             if (threatsArray.length > 0) {
+                const nowIso = new Date().toISOString();
                 const mapped: Threat[] = threatsArray.map((t, idx) => ({
                     id: idx + 1,
                     fileName: t[0],
                     filePath: t[1],
                     detection: "Malware.Generic",
                     recommendedAction: "delete",
+                    detectedAt: nowIso,
+                    source: "full_scan",
+                    status: "active",
                 }));
 
                 setThreats(mapped);
@@ -278,92 +227,40 @@ const App: React.FC = () => {
         };
     }, []);
 
-    const handleToggleRealtime = (enabled: boolean) => {
-        if (!enabled) {
-            setPendingRealtimeValue(false);
-            setShowDisableModal(true);
-            return;
-        }
-
-        setRealtimeEnabled(true);
-        setStatus("protected");
-
-        if (isTauri) {
-            invoke("set_realtime_enabled", { enabled: true }).catch(() => {});
-        }
-
-        setLogs((prev) => [
-            {
-                id: prev.length + 1,
-                timestamp: new Date().toISOString().slice(0, 16).replace("T", " "),
-                scan_type: "realtime",
-                result: "clean",
-                details: "Real-time protection enabled.",
-            },
-            ...prev,
-        ]);
-    };
-
-    const confirmDisableRealtime = () => {
-        if (pendingRealtimeValue === false) {
-            setRealtimeEnabled(false);
-            setStatus("not_protected");
-
-            if (isTauri) {
-                invoke("set_realtime_enabled", { enabled: false }).catch(() => {});
-            }
-
-            setLogs((prev) => [
-                {
-                    id: prev.length + 1,
-                    timestamp: new Date().toISOString().slice(0, 16).replace("T", " "),
-                    scan_type: "realtime",
-                    result: "clean",
-                    details: "Real-time protection disabled by the user.",
-                },
-                ...prev,
-            ]);
-        }
-        setShowDisableModal(false);
-        setPendingRealtimeValue(null);
-    };
-
-    const cancelDisableRealtime = () => {
-        setShowDisableModal(false);
-        setPendingRealtimeValue(null);
-    };
-
-    const handleFullScan = async () => {
-        if (status === "scanning") return;
-
-        setStatus("scanning");
-        setScanProgress({ current: 0, total: 0, file: "" });
-
-        // Web preview: fake scan
+    const startFullScan = async () => {
         if (!isTauri) {
-            const timestamp = new Date().toISOString().slice(0, 16).replace("T", " ");
+            setStatus("scanning");
+            setScanProgress({ current: 0, total: 100, file: "Simulating scan..." });
 
-            setTimeout(() => {
-                setStatus(realtimeEnabled ? "protected" : "not_protected");
-                setLogs((prev) => [
-                    {
-                        id: prev.length + 1,
-                        timestamp,
-                        scan_type: "full_scan",
-                        result: "clean",
-                        details:
-                            "Full system scan completed. No threats found (web preview mode).",
-                    },
-                    ...prev,
-                ]);
-                setScanProgress({ current: 0, total: 0, file: "" });
-            }, 2000);
+            let current = 0;
+            const interval = setInterval(() => {
+                current += 5;
+                if (current >= 100) {
+                    clearInterval(interval);
+                    setStatus(realtimeEnabled ? "protected" : "not_protected");
+                    setScanProgress({ current: 0, total: 0, file: "" });
+                    setLogs((prev) => [
+                        {
+                            id: prev.length + 1,
+                            timestamp: new Date().toISOString().slice(0, 16).replace("T", " "),
+                            scan_type: "full_scan",
+                            result: "clean",
+                            details: "Full scan completed (demo only, no real engine).",
+                        },
+                        ...prev,
+                    ]);
+                } else {
+                    setScanProgress({ current, total: 100, file: "Simulating scan..." });
+                }
+            }, 200);
 
             return;
         }
 
         // Tauri: kald backend
         try {
+            setStatus("scanning");
+            setScanProgress({ current: 0, total: 0, file: "" });
             await invoke("fake_full_scan");
         } catch (err) {
             console.error("Scan error:", err);
@@ -450,16 +347,13 @@ const App: React.FC = () => {
                         id: prev.length + 1,
                         timestamp: now,
                         scan_type: "full_scan",
-                        result: "threats_found",
-                        details:
-                            "Attempted to quarantine threats, but an error occurred. Please check file permissions.",
+                        result: "clean",
+                        details: "Failed to move threats to quarantine.",
                     },
                     ...prev,
                 ]);
             }
         } else {
-            setQuarantine((prev) => [...newEntries, ...prev]);
-
             setLogs((prev) => [
                 {
                     id: prev.length + 1,
@@ -468,7 +362,7 @@ const App: React.FC = () => {
                     result: "clean",
                     details: `${removedCount} threat${
                         removedCount === 1 ? "" : "s"
-                    } marked as removed (preview mode).`,
+                    } removed from list (demo only).`,
                 },
                 ...prev,
             ]);
@@ -478,125 +372,72 @@ const App: React.FC = () => {
         setShowThreatsModal(false);
     };
 
-    const handleRestoreQuarantine = async (id: number) => {
+    const handleRestoreQuarantine = (id: number) => {
         const entry = quarantine.find((q) => q.id === id);
         if (!entry) return;
 
         const now = new Date().toISOString().slice(0, 16).replace("T", " ");
 
-        if (isTauri) {
-            try {
-                await invoke("restore_from_quarantine", {
-                    items: [
-                        {
-                            file_name: entry.fileName,
-                            original_path: entry.originalPath,
-                        },
-                    ],
-                });
-
-                setLogs((prev) => [
-                    {
-                        id: prev.length + 1,
-                        timestamp: now,
-                        scan_type: "full_scan",
-                        result: "clean",
-                        details: `Restored file ${entry.fileName} from quarantine.`,
-                    },
-                    ...prev,
-                ]);
-            } catch (err) {
-                console.error("Restore error:", err);
-                setLogs((prev) => [
-                    {
-                        id: prev.length + 1,
-                        timestamp: now,
-                        scan_type: "full_scan",
-                        result: "threats_found",
-                        details: `Failed to restore ${entry.fileName} from quarantine.`,
-                    },
-                    ...prev,
-                ]);
-                return;
-            }
-        }
-
+        // Fjern fra quarantine-listen
         setQuarantine((prev) => prev.filter((q) => q.id !== id));
+
+        // Log, at filen er "restored"
+        setLogs((prev) => [
+            {
+                id: prev.length + 1,
+                timestamp: now,
+                scan_type: "realtime",
+                result: "clean",
+                details: `Restored file from quarantine: ${entry.fileName}`,
+            },
+            ...prev,
+        ]);
+
+        // Hvis vi senere laver rigtig backend-restore, kan vi her kalde et Tauri-kommando (restore_from_quarantine)
     };
 
     const handleDeleteQuarantine = (id: number) => {
+        // Vi åbner bare confirm-modal og gemmer id’et
         setPendingDeleteId(id);
         setShowDeleteModal(true);
     };
 
-    const confirmDeleteQuarantine = async () => {
-        if (pendingDeleteId === null) {
-            setShowDeleteModal(false);
+
+    const handleToggleRealtime = (enabled: boolean) => {
+        if (!enabled) {
+            setPendingRealtimeValue(false);
+            setShowRealtimeConfirm(true);
             return;
         }
 
-        const entry = quarantine.find((q) => q.id === pendingDeleteId);
-        if (!entry) {
-            setShowDeleteModal(false);
-            setPendingDeleteId(null);
-            return;
-        }
-
-        const now = new Date().toISOString().slice(0, 16).replace("T", " ");
-
-        if (isTauri) {
-            try {
-                await invoke("delete_quarantine_files", {
-                    fileNames: [entry.fileName],
-                });
-
-                setLogs((prev) => [
-                    {
-                        id: prev.length + 1,
-                        timestamp: now,
-                        scan_type: "full_scan",
-                        result: "clean",
-                        details: `Deleted quarantined file ${entry.fileName}.`,
-                    },
-                    ...prev,
-                ]);
-            } catch (err) {
-                console.error("Delete quarantine error:", err);
-                setLogs((prev) => [
-                    {
-                        id: prev.length + 1,
-                        timestamp: now,
-                        scan_type: "full_scan",
-                        result: "threats_found",
-                        details: `Failed to delete quarantined file ${entry.fileName}.`,
-                    },
-                    ...prev,
-                ]);
-                setShowDeleteModal(false);
-                setPendingDeleteId(null);
-                return;
-            }
-        }
-
-        setQuarantine((prev) => prev.filter((q) => q.id !== pendingDeleteId));
-        setShowDeleteModal(false);
-        setPendingDeleteId(null);
+        setRealtimeEnabled(true);
+        setStatus("protected");
     };
 
-    const cancelDeleteQuarantine = () => {
-        setShowDeleteModal(false);
-        setPendingDeleteId(null);
+    const confirmDisableRealtime = () => {
+        setRealtimeEnabled(false);
+        setStatus("not_protected");
+        setShowRealtimeConfirm(false);
+        setPendingRealtimeValue(null);
+
+        setLogs((prev) => [
+            {
+                id: prev.length + 1,
+                timestamp: new Date().toISOString().slice(0, 16).replace("T", " "),
+                scan_type: "realtime",
+                result: "clean",
+                details: "Real-time protection was turned off by the user.",
+            },
+            ...prev,
+        ]);
     };
 
-    const handleLogout = () => {
-        if (typeof window !== "undefined") {
-            window.localStorage.removeItem("stellar_logged_in");
-        }
-        setView("login");
+    const cancelDisableRealtime = () => {
+        setShowRealtimeConfirm(false);
+        setPendingRealtimeValue(null);
     };
 
-
-    const handleAuthenticated = () => {
+    const handleLoginSuccess = () => {
         if (typeof window !== "undefined") {
             window.localStorage.setItem("stellar_logged_in", "1");
         }
@@ -609,33 +450,34 @@ const App: React.FC = () => {
 
     const shellClass = isTauri
         ? "flex-1 bg-[#F4F6FB] flex flex-col relative min-h-0"
-        : "w-[1100px] h-[680px] bg-[#F4F6FB] rounded-[32px] shadow-[0_24px_80px_rgba(15,23,42,0.45)] flex flex-col relative overflow-hidden";
+        : "w-[1100px] h-[680px] bg-[#F4F6FB] rounded-[32px] shadow-[0_24px_60px_rgba(15,23,42,0.45)] flex flex-col relative overflow-hidden";
 
     return (
         <div className={rootClass}>
             <div className={shellClass}>
                 {/* Main content */}
                 <div className="flex flex-1 min-h-0">
-                {isAntivirusView && (
+                    {isAntivirusView && (
                         <Sidebar current={currentSidebarView} onChange={handleSidebarChange} />
                     )}
 
                     <div className="flex-1 flex flex-col min-h-0">
+                        {isAntivirusView && <HeaderBar realtimeEnabled={realtimeEnabled} />}
 
-                    {isAntivirusView && <HeaderBar status={status} />}
                         <main className="flex-1 px-8 pb-8 overflow-y-auto">
                             {view === "antivirus_dashboard" && (
                                 <DashboardScreen
                                     status={status}
                                     realtimeEnabled={realtimeEnabled}
                                     onToggleRealtime={handleToggleRealtime}
-                                    onFullScan={handleFullScan}
+                                    onFullScan={startFullScan}
                                     lastScan={lastFullScan}
-                                    recentLogs={logs.slice(0, 3)}
-                                    onOpenActivityLog={() => setView("antivirus_logs")}
+                                    recentLogs={logs.slice(0, 4)}
                                     scanProgress={scanProgress}
+                                    onViewThreats={handleOpenThreatsModal}
                                 />
                             )}
+
                             {view === "antivirus_logs" && (
                                 <LogsScreen
                                     logs={logs}
@@ -645,32 +487,39 @@ const App: React.FC = () => {
                                     onDeleteQuarantine={handleDeleteQuarantine}
                                 />
                             )}
+
                             {view === "antivirus_settings" && (
-                                <SettingsScreen onLogout={handleLogout} />
+                                <SettingsScreen />
                             )}
+
                             {view === "login" && (
-                                <LoginScreen onAuthenticated={handleAuthenticated} />
+                                <LoginScreen onAuthenticated={handleLoginSuccess} />
                             )}
+
                             {view === "register" && (
-                                <RegisterScreen onAuthenticated={handleAuthenticated} />
+                                <RegisterScreen onAuthenticated={handleLoginSuccess} />
                             )}
                         </main>
                     </div>
                 </div>
 
-                {/* Modal: disable real-time */}
-                {showDisableModal && (
-                    <div className="absolute inset-0 bg-black/40 flex items-center justify-center z-40">
-                        <div className="w-[380px] bg-white rounded-3xl shadow-[0_20px_60px_rgba(15,23,42,0.5)] px-6 py-6">
+                {/* Modal: confirm realtime off */}
+                {showRealtimeConfirm && (
+                    <div className="absolute inset-0 bg-black/40 flex items-center justify-center z-50">
+                        <div className="w-[420px] bg-white rounded-3xl shadow-[0_20px_60px_rgba(15,23,42,0.5)] px-6 py-6">
                             <h3 className="text-sm font-semibold text-[#111827] mb-2">
                                 Turn off real-time protection?
                             </h3>
-                            <p className="text-xs text-[#6B7280] mb-4">
-                                If you disable real-time protection, Stellar Antivirus will no
-                                longer scan new and modified files automatically. This can make
-                                your device more vulnerable to malware.
+                            <p className="text-xs text-[#6B7280] mb-3">
+                                Real-time protection helps block malware the moment it touches your
+                                system. If you turn it off, Stellar Antivirus will only scan when you
+                                run a manual scan.
                             </p>
-                            <div className="flex justify-end gap-2 mt-2">
+                            <p className="text-xs text-[#B91C1C] mb-4">
+                                We strongly recommend keeping it enabled unless you know exactly what
+                                you&apos;re doing.
+                            </p>
+                            <div className="flex justify-end gap-2">
                                 <button
                                     onClick={cancelDisableRealtime}
                                     className="px-4 h-9 rounded-full text-xs font-medium border border-[#E5E7EB] text-[#111827] hover:bg-[#F3F4F6]"
@@ -697,29 +546,55 @@ const App: React.FC = () => {
                             </h3>
                             <p className="text-xs text-[#6B7280] mb-3">
                                 This will permanently delete the selected file from quarantine.
-                                This action cannot be undone.
                             </p>
-                            <p className="text-[11px] text-[#9CA3AF] mb-4">
-                                We only recommend permanent deletion if you are sure this file
-                                is not needed and is unsafe to keep.
-                            </p>
-                            <div className="flex justify-end gap-2 mt-2">
+                            <div className="flex justify-end gap-2">
                                 <button
-                                    onClick={cancelDeleteQuarantine}
+                                    onClick={() => {
+                                        setShowDeleteModal(false);
+                                        setPendingDeleteId(null);
+                                    }}
                                     className="px-4 h-9 rounded-full text-xs font-medium border border-[#E5E7EB] text-[#111827] hover:bg-[#F3F4F6]"
                                 >
                                     Cancel
                                 </button>
                                 <button
-                                    onClick={confirmDeleteQuarantine}
-                                    className="px-4 h-9 rounded-full text-xs font-semibold bg-[#DC2626] text-white shadow-[0_10px_30px_rgba(220,38,38,0.6)] hover:bg-[#B91C1C]"
+                                    onClick={() => {
+                                        if (pendingDeleteId != null) {
+                                            const entry = quarantine.find((q) => q.id === pendingDeleteId);
+                                            const now = new Date().toISOString().slice(0, 16).replace("T", " ");
+
+                                            // Fjern fra quarantine-listen i UI
+                                            setQuarantine((prev) =>
+                                                prev.filter((q) => q.id !== pendingDeleteId)
+                                            );
+
+                                            // Log handlingen
+                                            if (entry) {
+                                                setLogs((prev) => [
+                                                    {
+                                                        id: prev.length + 1,
+                                                        timestamp: now,
+                                                        scan_type: "full_scan",
+                                                        result: "clean",
+                                                        details: `Permanently deleted file from quarantine: ${entry.fileName}`,
+                                                    },
+                                                    ...prev,
+                                                ]);
+                                            }
+                                        }
+
+                                        setShowDeleteModal(false);
+                                        setPendingDeleteId(null);
+                                    }}
+                                    className="px-4 h-9 rounded-full text-xs font-semibold bg-[#DC2626] text-white shadow-[0_10px_30px_rgba(220,38,38,0.6)]"
                                 >
-                                    Delete permanently
+                                    Delete
                                 </button>
                             </div>
                         </div>
                     </div>
                 )}
+
 
                 {/* Modal: threats */}
                 <ThreatsModal
