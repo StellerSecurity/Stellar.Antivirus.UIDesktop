@@ -18,6 +18,9 @@ use tauri::{AppHandle, Emitter};
 use tauri_plugin_autostart::MacosLauncher;
 use notify::event::{ModifyKind, DataChange, MetadataKind, RenameMode};
 use tauri_plugin_notification::NotificationExt;
+use walkdir::WalkDir;
+use reqwest::blocking::Client as HttpClient;
+use std::collections::HashSet;
 
 // ---- Global state ----
 
@@ -86,6 +89,80 @@ struct ThreatSignature {
     severity: String,
     platforms: String,
 }
+
+#[derive(Deserialize, Debug)]
+struct CloudSignature {
+    sha256: String,
+    name: Option<String>,
+    family: Option<String>,
+    severity: Option<String>,
+    source: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+struct CloudLookupResponse {
+    found: bool,
+    malicious: bool,
+    #[serde(default)]
+    signature: Option<CloudSignature>,
+}
+
+fn threat_api_base_url() -> String {
+    // Brug env hvis du vil, ellers default til din Azure URL
+    std::env::var("STELLAR_THREAT_API_BASE")
+        .unwrap_or_else(|_| "https://stellarantivirusthreatapiprod.azurewebsites.net".to_string())
+}
+
+/// Kalder Stellar Threat API med SHA256 og returnerer et "navn" hvis den er malicious
+fn cloud_lookup_name_for_hash(hash: &str) -> Option<String> {
+    let base = threat_api_base_url();
+    let url = format!("{}/api/av/v1/hash/check", base);
+
+    let client = HttpClient::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .ok()?;
+
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({
+            "client": {
+                "product": "Stellar Antivirus Desktop",
+                "platform": "linux",            // eller "macos"/"windows" alt efter build
+                "version": "1.0.0",
+                "threat_db_version": 1          // kan også være null hvis du vil
+            },
+            "files": [
+                {
+                    "sha256": hash,
+                    "size": serde_json::Value::Null,
+                    "extension": serde_json::Value::Null
+                }
+            ]
+        }))
+        .send()
+        .ok()?;
+
+    if !resp.status().is_success() {
+        eprintln!("[Cloud] non-200 status: {}", resp.status());
+        return None;
+    }
+
+    let body: CloudLookupResponse = resp.json().ok()?;
+
+    if !body.found || !body.malicious {
+        return None;
+    }
+
+    if let Some(sig) = body.signature {
+        if let Some(name) = sig.name {
+            return Some(name);
+        }
+    }
+
+    Some("Stellar Cloud malware (hash match)".to_string())
+}
+
 
 // ---- Helper paths ----
 
@@ -256,26 +333,46 @@ async fn fake_full_scan(app: AppHandle) -> Result<(), String> {
             },
         );
 
+        let mut detected = false;
+
         if let Some(hash) = sha256_of_file(file) {
             let hash_lower = hash.to_lowercase();
+
+            // 1) Lokal DB først
             if let Some(sig) = lookup_threat_by_hash(&hash_lower) {
                 threats.push((sig.name.clone(), file_str.clone()));
                 insert_detection(&file_str, &hash_lower, Some(&sig), "full_scan", "none");
-            } else if is_test_filename(file) {
+                detected = true;
+            }
+            // 2) Hvis ikke lokalt → prøv cloud API
+            else if let Some(cloud_name) = cloud_lookup_name_for_hash(&hash_lower) {
+                threats.push((cloud_name.clone(), file_str.clone()));
+                // vi har ikke en lokal ThreatSignature, så vi gemmer uden foreign key
+                insert_detection(&file_str, &hash_lower, None, "full_scan", "none");
+                detected = true;
+            }
+            // 3) Sidst: vores test-filnavn
+            else if is_test_filename(file) {
                 let test_name = "Stellar.Test.FileNameRule".to_string();
                 threats.push((test_name.clone(), file_str.clone()));
                 insert_detection(&file_str, &hash_lower, None, "full_scan", "none");
+                detected = true;
             }
         } else if is_test_filename(file) {
+            // Kan ikke hashe, men navn matcher testfil
             let test_name = "Stellar.Test.FileNameRule".to_string();
             threats.push((test_name.clone(), file_str.clone()));
             insert_detection(&file_str, "<no-hash>", None, "full_scan", "none");
+            detected = true;
+        }
+
+        if !detected {
+            // no-op, clean
         }
 
         thread::sleep(Duration::from_millis(10));
     }
 
-    // 👇 clone, så vi stadig kan bruge `threats` bagefter
     let _ = app.emit(
         "scan_finished",
         ScanFinishedPayload {
@@ -283,21 +380,9 @@ async fn fake_full_scan(app: AppHandle) -> Result<(), String> {
         },
     );
 
-    // 🔔 Native notification hvis der blev fundet noget
-    if !threats.is_empty() {
-        if let Err(e) = app
-            .notification()
-            .builder()
-            .title("Stellar Antivirus")
-            .body(format!("Detected {} threat(s) in full scan.", threats.len()))
-            .show()
-        {
-            eprintln!("Failed to show scan notification: {e}");
-        }
-    }
-
     Ok(())
 }
+
 
 #[tauri::command]
 fn set_realtime_enabled(enabled: bool) {
@@ -514,6 +599,9 @@ fn start_realtime_watcher(app_handle: AppHandle) {
 
         println!("Realtime watcher started on {:?}", watch_paths);
 
+        // Cache – så vi IKKE kalder API flere gange for samme hash i én session
+        let mut cloud_checked: HashSet<String> = HashSet::new();
+
         for event in rx {
             if !REALTIME_ENABLED.load(Ordering::SeqCst) {
                 continue;
@@ -542,7 +630,7 @@ fn start_realtime_watcher(app_handle: AppHandle) {
             }
             .to_string();
 
-            // 1) Emit til UI (du kan vælge at ignorere det i React)
+            // 1) Emit til UI (React kan bruge det, eller ignorere)
             if let Err(e) = app_handle.emit(
                 "realtime_file_event",
                 RealtimeFilePayload {
@@ -553,7 +641,7 @@ fn start_realtime_watcher(app_handle: AppHandle) {
                 eprintln!("failed to emit realtime_file_event: {e}");
             }
 
-            // 2) Simpel relevant filter – Create + Modify + Any
+            // Kun create/modify/any er interessante
             let relevant = matches!(
                 event.kind,
                 EventKind::Create(_) | EventKind::Modify(_) | EventKind::Any
@@ -563,23 +651,26 @@ fn start_realtime_watcher(app_handle: AppHandle) {
                 continue;
             }
 
-            // Lille pause så editor når at skrive filen færdig
+            // Lille pause så editor/browser når at skrive filen færdig
             thread::sleep(Duration::from_millis(20));
 
             let mut detected_name: Option<String> = None;
 
-            // Først hash-baseret match
+            // Først hash-baseret match (lokal DB + evt. cloud)
             if let Some(hash) = sha256_of_file(path) {
                 let hash_lower = hash.to_lowercase();
 
+                // 1) Lokal DB
                 if let Some(sig) = lookup_threat_by_hash(&hash_lower) {
                     println!(
-                        "[Realtime] Threat by hash detected: {} at {}",
+                        "[Realtime] Threat by hash (local DB): {} at {}",
                         sig.name, file
                     );
                     insert_detection(&file, &hash_lower, Some(&sig), "realtime", "none");
                     detected_name = Some(sig.name.clone());
-                } else if is_test_filename(path) {
+                }
+                // 2) Testfil-regel på filnavn (dev)
+                else if is_test_filename(path) {
                     let test_name = "Stellar.Test.FileNameRule".to_string();
                     println!(
                         "[Realtime] Test filename rule matched (hash ok): {}",
@@ -587,6 +678,23 @@ fn start_realtime_watcher(app_handle: AppHandle) {
                     );
                     insert_detection(&file, &hash_lower, None, "realtime", "none");
                     detected_name = Some(test_name);
+                }
+                // 3) Cloud API fallback (kun hvis vi ikke allerede har slået den hash op)
+                else if !cloud_checked.contains(&hash_lower) {
+                    println!("[Realtime] Local DB miss, checking cloud for hash {}", hash_lower);
+
+                    if let Some(cloud_name) = cloud_lookup_name_for_hash(&hash_lower) {
+                        println!(
+                            "[Realtime] Threat by hash (cloud API): {} at {}",
+                            cloud_name, file
+                        );
+                        insert_detection(&file, &hash_lower, None, "realtime_cloud", "none");
+                        detected_name = Some(cloud_name);
+                    }
+
+                    // Marker at vi nu har slået den hash op – også hvis den var clean,
+                    // så vi ikke spammer API'et næste gang.
+                    cloud_checked.insert(hash_lower.clone());
                 }
             } else if is_test_filename(path) {
                 // Hvis hashing failede, men filnavn matcher vores testregel
@@ -599,6 +707,7 @@ fn start_realtime_watcher(app_handle: AppHandle) {
                 detected_name = Some(test_name);
             }
 
+            // Hvis vi fandt noget – emit event + notifikation
             if let Some(name) = detected_name {
                 println!(
                     "[Realtime] Emitting realtime_threat_detected for {} ({})",
@@ -608,11 +717,11 @@ fn start_realtime_watcher(app_handle: AppHandle) {
                 let _ = app_handle.emit(
                     "realtime_threat_detected",
                     ScanFinishedPayload {
-                        threats: vec![(name, file.clone())],
+                        threats: vec![(name.clone(), file.clone())],
                     },
                 );
 
-                // 🔔 Native notification for realtime
+                // 🔔 Native notification for realtime detection
                 if let Err(e) = app_handle
                     .notification()
                     .builder()
@@ -622,11 +731,11 @@ fn start_realtime_watcher(app_handle: AppHandle) {
                 {
                     eprintln!("Failed to show realtime notification: {e}");
                 }
-
             }
         }
     });
 }
+
 
 
 // ---- App entry ----

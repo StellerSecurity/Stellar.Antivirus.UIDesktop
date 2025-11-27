@@ -18,6 +18,8 @@ interface Props {
     scanProgress: ScanProgress;
 }
 
+
+
 const DashboardScreen: React.FC<Props> = ({
                                               status,
                                               realtimeEnabled,
@@ -36,6 +38,18 @@ const DashboardScreen: React.FC<Props> = ({
             : 0;
 
     const progressDisplay = Math.min(100, Math.max(0, percent || 0));
+
+    const currentFileDisplay =
+        scanProgress && scanProgress.file
+            ? (() => {
+                const full = scanProgress.file;
+                const parts = full.split(/[\\/]/); // virker på både Windows og Linux
+                const file = parts.pop() ?? "";
+                const parent = parts.pop() ?? "";
+                const short = parent ? `${parent}/${file}` : file;
+                return { full, short };
+            })()
+            : null;
 
     return (
         <div className="h-full flex flex-col gap-6 pt-6">
@@ -150,10 +164,13 @@ const DashboardScreen: React.FC<Props> = ({
                     : "Preparing scan…"}
               </span>
                         </div>
-                        {scanProgress.file && (
-                            <div className="mt-1 text-[11px] text-[#2563EB] line-clamp-1">
-                                {scanProgress.file}
-                            </div>
+                        {currentFileDisplay && (
+                            <p
+                                className="mt-2 text-[11px] text-[#4B5563] max-w-[480px] truncate"
+                                title={currentFileDisplay.full}
+                            >
+                                {currentFileDisplay.short}
+                            </p>
                         )}
                     </div>
                 </div>
