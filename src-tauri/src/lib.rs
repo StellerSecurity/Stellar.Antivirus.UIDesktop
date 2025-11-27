@@ -11,22 +11,24 @@ use std::{
 };
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_autostart::MacosLauncher;
-use notify::event::{ModifyKind, DataChange, MetadataKind, RenameMode};
 use tauri_plugin_notification::NotificationExt;
 use walkdir::WalkDir;
-use reqwest::blocking::Client as HttpClient;
-use std::collections::HashSet;
+use reqwest::blocking::Client;
 
 // ---- Global state ----
 
 static REALTIME_ENABLED: AtomicBool = AtomicBool::new(true);
 
-// ---- Payloads to frontend ----
+// ---- API config ----
+
+const API_BASE_URL: &str = "https://stellarantivirusthreatapiprod.azurewebsites.net";
+const API_HASH_CHECK_PATH: &str = "/api/av/v1/hash/check";
+
+// ---- Payloads til frontend ----
 
 #[derive(Serialize, Clone)]
 struct ScanProgressPayload {
@@ -52,117 +54,52 @@ struct RestoreItem {
     original_path: String,
 }
 
-// ---- Threat DB JSON structs (fra Azure) ----
+// ---- API structs ----
 
-#[derive(Deserialize)]
-struct ThreatDbFile {
-    schema_version: u32,
-    db_version: u32,
-    updated_at: String,
-    threats: Vec<ThreatJsonEntry>,
+#[derive(Serialize)]
+struct ThreatApiClient {
+    product: String,
+    platform: String,
+    version: String,
+    threat_db_version: Option<u32>,
 }
 
-#[derive(Deserialize)]
-struct ThreatJsonEntry {
-    id: String,
+#[derive(Serialize)]
+struct ThreatApiFile {
     sha256: String,
+    size: Option<u64>,
+    extension: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ThreatApiRequest {
+    client: ThreatApiClient,
+    files: Vec<ThreatApiFile>,
+}
+
+#[derive(Deserialize, Clone)]
+struct ThreatApiSignature {
+    id: String,
     name: String,
     family: String,
     category: String,
     severity: String,
-    platforms: Vec<String>,
-    tags: Option<Vec<String>>,
-    notes: Option<String>,
-    first_seen: Option<String>,
-    last_updated: Option<String>,
-    source: Option<String>,
 }
 
-// ---- Lokale DB structs ----
-
-#[derive(Clone)]
-struct ThreatSignature {
-    id: i64,
+#[derive(Deserialize, Clone)]
+struct ThreatApiResult {
     sha256: String,
-    name: String,
-    family: String,
-    severity: String,
-    platforms: String,
+    verdict: String, // fx "clean", "malware", "pup", ...
+    signature: Option<ThreatApiSignature>,
+    recommended_action: Option<String>,
 }
 
-#[derive(Deserialize, Debug)]
-struct CloudSignature {
-    sha256: String,
-    name: Option<String>,
-    family: Option<String>,
-    severity: Option<String>,
-    source: Option<String>,
+#[derive(Deserialize)]
+struct ThreatApiResponse {
+    schema_version: u32,
+    db_version: u32,
+    results: Vec<ThreatApiResult>,
 }
-
-#[derive(Deserialize, Debug)]
-struct CloudLookupResponse {
-    found: bool,
-    malicious: bool,
-    #[serde(default)]
-    signature: Option<CloudSignature>,
-}
-
-fn threat_api_base_url() -> String {
-    // Brug env hvis du vil, ellers default til din Azure URL
-    std::env::var("STELLAR_THREAT_API_BASE")
-        .unwrap_or_else(|_| "https://stellarantivirusthreatapiprod.azurewebsites.net".to_string())
-}
-
-/// Kalder Stellar Threat API med SHA256 og returnerer et "navn" hvis den er malicious
-fn cloud_lookup_name_for_hash(hash: &str) -> Option<String> {
-    let base = threat_api_base_url();
-    let url = format!("{}/api/av/v1/hash/check", base);
-
-    let client = HttpClient::builder()
-        .timeout(Duration::from_secs(3))
-        .build()
-        .ok()?;
-
-    let resp = client
-        .post(&url)
-        .json(&serde_json::json!({
-            "client": {
-                "product": "Stellar Antivirus Desktop",
-                "platform": "linux",            // eller "macos"/"windows" alt efter build
-                "version": "1.0.0",
-                "threat_db_version": 1          // kan også være null hvis du vil
-            },
-            "files": [
-                {
-                    "sha256": hash,
-                    "size": serde_json::Value::Null,
-                    "extension": serde_json::Value::Null
-                }
-            ]
-        }))
-        .send()
-        .ok()?;
-
-    if !resp.status().is_success() {
-        eprintln!("[Cloud] non-200 status: {}", resp.status());
-        return None;
-    }
-
-    let body: CloudLookupResponse = resp.json().ok()?;
-
-    if !body.found || !body.malicious {
-        return None;
-    }
-
-    if let Some(sig) = body.signature {
-        if let Some(name) = sig.name {
-            return Some(name);
-        }
-    }
-
-    Some("Stellar Cloud malware (hash match)".to_string())
-}
-
 
 // ---- Helper paths ----
 
@@ -174,14 +111,7 @@ fn quarantine_root() -> PathBuf {
     base_dir.join("StellarAntivirus").join("Quarantine")
 }
 
-fn db_path() -> PathBuf {
-    let base_dir = dirs::data_dir()
-        .or_else(dirs::home_dir)
-        .unwrap_or_else(|| PathBuf::from("."));
-
-    base_dir.join("StellarAntivirus").join("stellar_av.db")
-}
-
+// Simpel test-filregel (navn)
 fn is_test_filename(path: &Path) -> bool {
     if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
         let lower = name.to_lowercase();
@@ -190,47 +120,7 @@ fn is_test_filename(path: &Path) -> bool {
     false
 }
 
-// ---- DB init ----
-
-fn init_db() -> Result<(), String> {
-    let db_file = db_path();
-
-    if let Some(parent) = db_file.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("Failed to create db dir: {e}"))?;
-    }
-
-    let conn = Connection::open(&db_file).map_err(|e| format!("Failed to open DB: {e}"))?;
-
-    conn.execute_batch(
-        r#"
-        CREATE TABLE IF NOT EXISTS threat_signatures (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            sha256        TEXT NOT NULL UNIQUE,
-            name          TEXT NOT NULL,
-            family        TEXT NOT NULL,
-            severity      TEXT NOT NULL,
-            platforms     TEXT NOT NULL,
-            created_at    TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS detections (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            file_path     TEXT NOT NULL,
-            sha256        TEXT NOT NULL,
-            threat_id     INTEGER,
-            detected_at   TEXT NOT NULL DEFAULT (datetime('now')),
-            source        TEXT NOT NULL,
-            action        TEXT NOT NULL,
-            FOREIGN KEY(threat_id) REFERENCES threat_signatures(id)
-        );
-        "#,
-    )
-    .map_err(|e| format!("Failed to create tables: {e}"))?;
-
-    Ok(())
-}
-
-// ---- Hash & lookup helpers ----
+// ---- Hash helper ----
 
 fn sha256_of_file(path: &Path) -> Option<String> {
     let mut file = std::fs::File::open(path).ok()?;
@@ -249,80 +139,108 @@ fn sha256_of_file(path: &Path) -> Option<String> {
     Some(hex::encode(hash))
 }
 
-fn lookup_threat_by_hash(hash: &str) -> Option<ThreatSignature> {
-    let conn = Connection::open(db_path()).ok()?;
+// ---- API helpers ----
 
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, sha256, name, family, severity, platforms
-         FROM threat_signatures
-         WHERE sha256 = ?1",
-        )
-        .ok()?;
-
-    let sig = stmt
-        .query_row(params![hash], |row| {
-            Ok(ThreatSignature {
-                id: row.get(0)?,
-                sha256: row.get(1)?,
-                name: row.get(2)?,
-                family: row.get(3)?,
-                severity: row.get(4)?,
-                platforms: row.get(5)?,
-            })
-        })
-        .ok()?;
-
-    Some(sig)
+fn build_client_payload() -> ThreatApiClient {
+    ThreatApiClient {
+        product: "Stellar Antivirus Desktop".to_string(),
+        platform: std::env::consts::OS.to_string(),
+        version: "1.0.0".to_string(),
+        threat_db_version: None,
+    }
 }
 
-fn insert_detection(
-    file_path: &str,
-    sha256: &str,
-    threat: Option<&ThreatSignature>,
-    source: &str,
-    action: &str,
-) {
-    if let Ok(conn) = Connection::open(db_path()) {
-        let threat_id = threat.map(|t| t.id);
-        let _ = conn.execute(
-            "INSERT INTO detections (file_path, sha256, threat_id, source, action)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![file_path, sha256, threat_id, source, action],
-        );
+fn call_threat_api_batch(files: Vec<ThreatApiFile>) -> Result<Vec<ThreatApiResult>, String> {
+    if files.is_empty() {
+        return Ok(vec![]);
     }
+
+    let url = format!("{}{}", API_BASE_URL, API_HASH_CHECK_PATH);
+
+    let req = ThreatApiRequest {
+        client: build_client_payload(),
+        files,
+    };
+
+    let client = Client::new();
+    let resp = client
+        .post(&url)
+        .json(&req)
+        .send()
+        .map_err(|e| format!("API request error: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("API returned HTTP {}", resp.status()));
+    }
+
+    let parsed: ThreatApiResponse = resp
+        .json()
+        .map_err(|e| format!("Failed to parse API JSON: {e}"))?;
+
+    Ok(parsed.results)
+}
+
+fn call_threat_api_single(hash: &str) -> Result<Option<ThreatApiResult>, String> {
+    let file = ThreatApiFile {
+        sha256: hash.to_string(),
+        size: None,
+        extension: None,
+    };
+
+    let results = call_threat_api_batch(vec![file])?;
+    Ok(results.into_iter().next())
 }
 
 // ---- Commands ----
 
+/// Full scan – scanner en masse filer og slår dem op mod API
 #[tauri::command]
 async fn fake_full_scan(app: AppHandle) -> Result<(), String> {
-    let mut files_to_scan: Vec<PathBuf> = Vec::new();
-    let mut scan_paths: Vec<PathBuf> = Vec::new();
+    // 1) Byg liste over filer (downloads, documents, desktop + lidt recursivt)
+    let mut paths_to_scan: Vec<PathBuf> = Vec::new();
 
     if let Some(downloads) = dirs::download_dir() {
-        scan_paths.push(downloads);
+        for entry in WalkDir::new(downloads).max_depth(3).into_iter().flatten() {
+            if entry.file_type().is_file() {
+                paths_to_scan.push(entry.into_path());
+            }
+        }
     }
     if let Some(documents) = dirs::document_dir() {
-        scan_paths.push(documents);
+        for entry in WalkDir::new(documents).max_depth(3).into_iter().flatten() {
+            if entry.file_type().is_file() {
+                paths_to_scan.push(entry.into_path());
+            }
+        }
     }
     if let Some(desktop) = dirs::desktop_dir() {
-        scan_paths.push(desktop);
-    }
-
-    for path in scan_paths {
-        if let Ok(entries) = fs::read_dir(path) {
-            for entry in entries.flatten().take(300) {
-                files_to_scan.push(entry.path());
+        for entry in WalkDir::new(desktop).max_depth(3).into_iter().flatten() {
+            if entry.file_type().is_file() {
+                paths_to_scan.push(entry.into_path());
             }
         }
     }
 
-    let total = files_to_scan.len();
-    let mut threats: Vec<(String, String)> = Vec::new();
+    // Trim så vi ikke dræber maskinen
+    const MAX_FILES: usize = 20_000;
+    if paths_to_scan.len() > MAX_FILES {
+        paths_to_scan.truncate(MAX_FILES);
+    }
 
-    for (i, file) in files_to_scan.iter().enumerate() {
-        let file_str = file.to_string_lossy().to_string();
+    let total = paths_to_scan.len();
+    if total == 0 {
+        let _ = app.emit(
+            "scan_finished",
+            ScanFinishedPayload { threats: vec![] },
+        );
+        return Ok(());
+    }
+
+    // 2) Hash alle filer og emit progress
+    let mut index_to_path: Vec<(usize, PathBuf, String)> = Vec::with_capacity(total);
+
+    for (i, path) in paths_to_scan.iter().enumerate() {
+        let file_str = path.to_string_lossy().to_string();
 
         let _ = app.emit(
             "scan_progress",
@@ -333,56 +251,99 @@ async fn fake_full_scan(app: AppHandle) -> Result<(), String> {
             },
         );
 
-        let mut detected = false;
-
-        if let Some(hash) = sha256_of_file(file) {
-            let hash_lower = hash.to_lowercase();
-
-            // 1) Lokal DB først
-            if let Some(sig) = lookup_threat_by_hash(&hash_lower) {
-                threats.push((sig.name.clone(), file_str.clone()));
-                insert_detection(&file_str, &hash_lower, Some(&sig), "full_scan", "none");
-                detected = true;
-            }
-            // 2) Hvis ikke lokalt → prøv cloud API
-            else if let Some(cloud_name) = cloud_lookup_name_for_hash(&hash_lower) {
-                threats.push((cloud_name.clone(), file_str.clone()));
-                // vi har ikke en lokal ThreatSignature, så vi gemmer uden foreign key
-                insert_detection(&file_str, &hash_lower, None, "full_scan", "none");
-                detected = true;
-            }
-            // 3) Sidst: vores test-filnavn
-            else if is_test_filename(file) {
-                let test_name = "Stellar.Test.FileNameRule".to_string();
-                threats.push((test_name.clone(), file_str.clone()));
-                insert_detection(&file_str, &hash_lower, None, "full_scan", "none");
-                detected = true;
-            }
-        } else if is_test_filename(file) {
-            // Kan ikke hashe, men navn matcher testfil
-            let test_name = "Stellar.Test.FileNameRule".to_string();
-            threats.push((test_name.clone(), file_str.clone()));
-            insert_detection(&file_str, "<no-hash>", None, "full_scan", "none");
-            detected = true;
+        if let Some(hash) = sha256_of_file(path) {
+            index_to_path.push((i, path.clone(), hash));
         }
 
-        if !detected {
-            // no-op, clean
+        // Lille pause så UI kan følge med
+        if i % 100 == 0 {
+            thread::sleep(Duration::from_millis(5));
         }
-
-        thread::sleep(Duration::from_millis(10));
     }
 
+    // 3) Byg batch til API
+    let mut files_for_api: Vec<ThreatApiFile> = Vec::new();
+    for (_idx, path, hash) in &index_to_path {
+        let ext = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_lowercase());
+        let size = fs::metadata(path).ok().map(|m| m.len());
+
+        files_for_api.push(ThreatApiFile {
+            sha256: hash.clone(),
+            size,
+            extension: ext,
+        });
+    }
+
+    // 4) Kald API
+    let api_results = match call_threat_api_batch(files_for_api) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Full scan API error: {e}");
+            // Send "scan_finished" uden threats så UI ikke hænger
+            let _ = app.emit(
+                "scan_finished",
+                ScanFinishedPayload { threats: vec![] },
+            );
+            return Err(e);
+        }
+    };
+
+    // Map sha256 -> (threat_name, file_path)
+    use std::collections::HashMap;
+
+    let mut hash_to_path: HashMap<String, String> = HashMap::new();
+    for (_idx, path, hash) in &index_to_path {
+        hash_to_path.insert(hash.to_lowercase(), path.to_string_lossy().to_string());
+    }
+
+    let mut threats_vec: Vec<(String, String)> = Vec::new();
+
+    for r in api_results {
+        let verdict = r.verdict.to_lowercase();
+        if verdict == "clean" || verdict == "unknown" {
+            continue;
+        }
+
+        if let Some(path_str) = hash_to_path.get(&r.sha256.to_lowercase()) {
+            let name = r
+                .signature
+                .as_ref()
+                .map(|s| s.name.clone())
+                .unwrap_or_else(|| "Unknown threat".to_string());
+            threats_vec.push((name, path_str.clone()));
+        }
+    }
+
+    // 5) Emit scan_finished til React
     let _ = app.emit(
         "scan_finished",
         ScanFinishedPayload {
-            threats: threats.clone(),
+            threats: threats_vec.clone(),
         },
     );
 
+    // 6) Notification når færdig
+    if !threats_vec.is_empty() {
+        let _ = app
+            .notification()
+            .builder()
+            .title("Stellar Antivirus")
+            .body(format!("Full scan completed – {} threat(s) found.", threats_vec.len()))
+            .show();
+    } else {
+        let _ = app
+            .notification()
+            .builder()
+            .title("Stellar Antivirus")
+            .body("Full scan completed – no threats found.")
+            .show();
+    }
+
     Ok(())
 }
-
 
 #[tauri::command]
 fn set_realtime_enabled(enabled: bool) {
@@ -390,6 +351,7 @@ fn set_realtime_enabled(enabled: bool) {
     println!("Realtime protection set to: {enabled}");
 }
 
+// Quarantine: flyt filer til karantænemappe
 #[tauri::command]
 async fn quarantine_files(paths: Vec<String>) -> Result<(), String> {
     let qdir = quarantine_root();
@@ -408,12 +370,10 @@ async fn quarantine_files(paths: Vec<String>) -> Result<(), String> {
         let fname = src.file_name().unwrap_or_else(|| std::ffi::OsStr::new("unknown"));
         let dest = qdir.join(fname);
 
-        // SLET gammel fil i quarantine – vi bruger altid 1:1 navn
         if dest.exists() {
             let _ = fs::remove_file(&dest);
         }
 
-        // Flyt filen til karantæne
         if let Err(e) = fs::rename(&src, &dest) {
             eprintln!("rename failed: {e}, trying copy+delete");
             fs::copy(&src, &dest).and_then(|_| fs::remove_file(&src))
@@ -426,7 +386,7 @@ async fn quarantine_files(paths: Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
-
+// Restore fra quarantine tilbage til original path
 #[tauri::command]
 async fn restore_from_quarantine(items: Vec<RestoreItem>) -> Result<(), String> {
     let quarantine_root = quarantine_root();
@@ -473,6 +433,7 @@ async fn restore_from_quarantine(items: Vec<RestoreItem>) -> Result<(), String> 
     Ok(())
 }
 
+// Slet filer i quarantine baseret på filnavn (bruges af UI's delete-knap)
 #[tauri::command]
 async fn delete_quarantine_files(file_names: Vec<String>) -> Result<(), String> {
     let quarantine_root = quarantine_root();
@@ -495,6 +456,7 @@ async fn delete_quarantine_files(file_names: Vec<String>) -> Result<(), String> 
     Ok(())
 }
 
+// Ældre helper – sletter baseret på original paths (kan stadig bruges fra UI hvis nødvendigt)
 #[tauri::command]
 async fn delete_files(paths: Vec<String>) -> Result<(), String> {
     let qdir = quarantine_root();
@@ -512,54 +474,6 @@ async fn delete_files(paths: Vec<String>) -> Result<(), String> {
             fs::remove_file(&qpath).map_err(|e| format!("Failed to delete file: {e}"))?;
         }
     }
-
-    Ok(())
-}
-
-
-#[tauri::command]
-fn update_threat_db(threats_json: String) -> Result<(), String> {
-    let db_file: ThreatDbFile =
-        serde_json::from_str(&threats_json).map_err(|e| format!("Failed to parse threat DB JSON: {e}"))?;
-
-    let mut conn =
-        Connection::open(db_path()).map_err(|e| format!("Failed to open DB: {e}"))?;
-
-    let tx = conn
-        .transaction()
-        .map_err(|e| format!("Failed to start transaction: {e}"))?;
-
-    for t in db_file.threats {
-        let platforms_joined = t.platforms.join(",");
-
-        tx.execute(
-            r#"
-            INSERT INTO threat_signatures (sha256, name, family, severity, platforms)
-            VALUES (?1, ?2, ?3, ?4, ?5)
-            ON CONFLICT(sha256) DO UPDATE SET
-                name = excluded.name,
-                family = excluded.family,
-                severity = excluded.severity,
-                platforms = excluded.platforms
-            "#,
-            params![
-                t.sha256.to_lowercase(),
-                t.name,
-                t.family,
-                t.severity,
-                platforms_joined,
-            ],
-        )
-        .map_err(|e| format!("Failed to upsert threat signature: {e}"))?;
-    }
-
-    tx.commit()
-        .map_err(|e| format!("Failed to commit threat DB update: {e}"))?;
-
-    println!(
-        "Threat DB updated from server. db_version = {}",
-        db_file.db_version
-    );
 
     Ok(())
 }
@@ -599,9 +513,6 @@ fn start_realtime_watcher(app_handle: AppHandle) {
 
         println!("Realtime watcher started on {:?}", watch_paths);
 
-        // Cache – så vi IKKE kalder API flere gange for samme hash i én session
-        let mut cloud_checked: HashSet<String> = HashSet::new();
-
         for event in rx {
             if !REALTIME_ENABLED.load(Ordering::SeqCst) {
                 continue;
@@ -611,15 +522,12 @@ fn start_realtime_watcher(app_handle: AppHandle) {
                 continue;
             }
 
-            // Brug altid SIDSTE path – ved rename er det typisk den nye fil
             let path = match event.paths.last() {
                 Some(p) => p,
                 None => continue,
             };
 
             let file = path.to_string_lossy().to_string();
-
-            println!("EVENT (runtime): kind={:?}, file={}", event.kind, file);
 
             let kind_str = match &event.kind {
                 EventKind::Create(_) => "create",
@@ -630,7 +538,7 @@ fn start_realtime_watcher(app_handle: AppHandle) {
             }
             .to_string();
 
-            // 1) Emit til UI (React kan bruge det, eller ignorere)
+            // Emit til UI (du logger ikke længere realtime spam i React, men håller event til debugging)
             if let Err(e) = app_handle.emit(
                 "realtime_file_event",
                 RealtimeFilePayload {
@@ -651,69 +559,47 @@ fn start_realtime_watcher(app_handle: AppHandle) {
                 continue;
             }
 
-            // Lille pause så editor/browser når at skrive filen færdig
+            // Lille pause så editor kan skrive filen færdig
             thread::sleep(Duration::from_millis(20));
 
             let mut detected_name: Option<String> = None;
 
-            // Først hash-baseret match (lokal DB + evt. cloud)
-            if let Some(hash) = sha256_of_file(path) {
+            // 1) Testfilregel (filnavn)
+            if is_test_filename(path) {
+                let test_name = "Stellar.Test.FileNameRule".to_string();
+                println!("[Realtime] Test filename rule matched: {}", file);
+                detected_name = Some(test_name);
+            } else if let Some(hash) = sha256_of_file(path) {
                 let hash_lower = hash.to_lowercase();
 
-                // 1) Lokal DB
-                if let Some(sig) = lookup_threat_by_hash(&hash_lower) {
-                    println!(
-                        "[Realtime] Threat by hash (local DB): {} at {}",
-                        sig.name, file
-                    );
-                    insert_detection(&file, &hash_lower, Some(&sig), "realtime", "none");
-                    detected_name = Some(sig.name.clone());
-                }
-                // 2) Testfil-regel på filnavn (dev)
-                else if is_test_filename(path) {
-                    let test_name = "Stellar.Test.FileNameRule".to_string();
-                    println!(
-                        "[Realtime] Test filename rule matched (hash ok): {}",
-                        file
-                    );
-                    insert_detection(&file, &hash_lower, None, "realtime", "none");
-                    detected_name = Some(test_name);
-                }
-                // 3) Cloud API fallback (kun hvis vi ikke allerede har slået den hash op)
-                else if !cloud_checked.contains(&hash_lower) {
-                    println!("[Realtime] Local DB miss, checking cloud for hash {}", hash_lower);
+                match call_threat_api_single(&hash_lower) {
+                    Ok(Some(result)) => {
+                        let verdict = result.verdict.to_lowercase();
+                        if verdict != "clean" && verdict != "unknown" {
+                            let name = result
+                                .signature
+                                .as_ref()
+                                .map(|s| s.name.clone())
+                                .unwrap_or_else(|| "Unknown threat".to_string());
 
-                    if let Some(cloud_name) = cloud_lookup_name_for_hash(&hash_lower) {
-                        println!(
-                            "[Realtime] Threat by hash (cloud API): {} at {}",
-                            cloud_name, file
-                        );
-                        insert_detection(&file, &hash_lower, None, "realtime_cloud", "none");
-                        detected_name = Some(cloud_name);
+                            println!(
+                                "[Realtime] API threat detected: {} ({})",
+                                name, file
+                            );
+                            detected_name = Some(name);
+                        }
                     }
-
-                    // Marker at vi nu har slået den hash op – også hvis den var clean,
-                    // så vi ikke spammer API'et næste gang.
-                    cloud_checked.insert(hash_lower.clone());
+                    Ok(None) => {
+                        // Intet match, alt godt
+                    }
+                    Err(e) => {
+                        eprintln!("[Realtime] API error for {}: {e}", file);
+                    }
                 }
-            } else if is_test_filename(path) {
-                // Hvis hashing failede, men filnavn matcher vores testregel
-                let test_name = "Stellar.Test.FileNameRule".to_string();
-                println!(
-                    "[Realtime] Test filename rule matched (no hash): {}",
-                    file
-                );
-                insert_detection(&file, "<no-hash>", None, "realtime", "none");
-                detected_name = Some(test_name);
             }
 
-            // Hvis vi fandt noget – emit event + notifikation
+            // Hvis vi fandt noget → emit event + native notification
             if let Some(name) = detected_name {
-                println!(
-                    "[Realtime] Emitting realtime_threat_detected for {} ({})",
-                    file, name
-                );
-
                 let _ = app_handle.emit(
                     "realtime_threat_detected",
                     ScanFinishedPayload {
@@ -721,22 +607,16 @@ fn start_realtime_watcher(app_handle: AppHandle) {
                     },
                 );
 
-                // 🔔 Native notification for realtime detection
-                if let Err(e) = app_handle
+                let _ = app_handle
                     .notification()
                     .builder()
                     .title("Stellar Antivirus")
                     .body(format!("Real-time protection blocked: {}", file))
-                    .show()
-                {
-                    eprintln!("Failed to show realtime notification: {e}");
-                }
+                    .show();
             }
         }
     });
 }
-
-
 
 // ---- App entry ----
 
@@ -754,17 +634,11 @@ pub fn run() {
             quarantine_files,
             restore_from_quarantine,
             delete_quarantine_files,
-            update_threat_db,
-            delete_files
+            delete_files,
         ])
         .setup(|app| {
-            if let Err(e) = init_db() {
-                eprintln!("Failed to init DB: {e}");
-            }
-
             let handle = app.handle().clone();
             start_realtime_watcher(handle);
-
             Ok(())
         })
         .run(tauri::generate_context!())
