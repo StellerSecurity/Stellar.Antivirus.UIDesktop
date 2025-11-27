@@ -17,9 +17,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
-const THREAT_DB_URL =
-    (import.meta as any).env?.VITE_THREAT_DB_URL ?? '';
-
 type View =
     | "antivirus_dashboard"
     | "antivirus_logs"
@@ -169,56 +166,6 @@ const App: React.FC = () => {
         window.localStorage.setItem("stellar_quarantine", JSON.stringify(quarantine));
     }, [quarantine]);
 
-    // --- Hent Threat DB fra Azure ved start ---
-// Auto-update Threat DB from Azure every hour
-    useEffect(() => {
-        if (!isTauri) return;
-
-        let stopped = false;
-
-        const syncThreatDb = async () => {
-            if (stopped) return;
-
-            try {
-                const res = await fetch(THREAT_DB_URL, {
-                    cache: "no-store",
-                } as RequestInit);
-
-                if (!res.ok) {
-                    console.error(
-                        "Failed to fetch threat DB:",
-                        res.status,
-                        res.statusText
-                    );
-                    return;
-                }
-
-                const jsonText = await res.text();
-                await invoke("update_threat_db", { threatsJson: jsonText });
-
-                console.log(
-                    "[Stellar AV] Threat DB synced at",
-                    new Date().toISOString()
-                );
-            } catch (err) {
-                console.error("Error updating threat DB:", err);
-            }
-        };
-
-        // 1) Sync med det samme ved opstart
-        syncThreatDb();
-
-        // 2) Sync hver time
-        const intervalId = window.setInterval(() => {
-            syncThreatDb();
-        }, 60 * 60 * 1000); // 1 hour
-
-        // Cleanup når appen lukkes / komponenten unmountes
-        return () => {
-            stopped = true;
-            window.clearInterval(intervalId);
-        };
-    }, []);
 
     // --- Autostart ---
     useEffect(() => {
