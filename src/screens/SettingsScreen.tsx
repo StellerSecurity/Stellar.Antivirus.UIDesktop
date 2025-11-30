@@ -1,14 +1,36 @@
+// src/screens/SettingsScreen.tsx
 import React from "react";
+import type { DashboardResponse } from "../api/dashboard";
 
 interface SettingsScreenProps {
     onLogout?: () => void;
+    dashboard?: DashboardResponse | null;
 }
 
-const SettingsScreen: React.FC<SettingsScreenProps> = ({ onLogout }) => {
-    // Demo-data – kan senere hentes fra backend
-    const stellarId = "bc@stellarsecurity.com";
-    const expiry = "2026-01-15";
-    const daysLeft = 247;
+const SettingsScreen: React.FC<SettingsScreenProps> = ({
+                                                           onLogout,
+                                                           dashboard,
+                                                       }) => {
+    // Username (Stellar ID) from dashboard, fallback if missing
+    const stellarId = dashboard?.user?.username ?? "Unknown";
+
+    // Expiry from subscription (ISO string from backend)
+    const expiresAtIso = dashboard?.subscription?.expires_at ?? null;
+
+    let expiryDisplay = "—";
+    let daysLeftDisplay: string | number = "—";
+
+    if (expiresAtIso) {
+        const expiryDate = new Date(expiresAtIso);
+        if (!isNaN(expiryDate.getTime())) {
+            expiryDisplay = expiryDate.toISOString().slice(0, 10); // YYYY-MM-DD
+
+            const now = new Date();
+            const diffMs = expiryDate.getTime() - now.getTime();
+            const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+            daysLeftDisplay = diffDays > 0 ? diffDays : 0;
+        }
+    }
 
     return (
         <div className="pt-6 flex flex-col gap-6">
@@ -46,7 +68,7 @@ const SettingsScreen: React.FC<SettingsScreenProps> = ({ onLogout }) => {
                             Days remaining
                         </div>
                         <div className="text-sm font-semibold text-[#166534]">
-                            {daysLeft} days
+                            {daysLeftDisplay !== "—" ? `${daysLeftDisplay} days` : "—"}
                         </div>
                     </div>
                     <div className="bg-[#FEF3C7] rounded-2xl px-4 py-3">
@@ -54,7 +76,7 @@ const SettingsScreen: React.FC<SettingsScreenProps> = ({ onLogout }) => {
                             Expires on
                         </div>
                         <div className="text-sm font-semibold text-[#92400E]">
-                            {expiry}
+                            {expiryDisplay}
                         </div>
                     </div>
                 </div>

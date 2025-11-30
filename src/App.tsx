@@ -17,6 +17,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
+import { fetchDashboard } from "./api/dashboard";
+import type { DashboardResponse } from "./api/dashboard";
+
 type View =
     | "antivirus_dashboard"
     | "antivirus_logs"
@@ -40,11 +43,11 @@ type QuarantineEntry = {
     detection: string;
 };
 
-// Er vi i Tauri eller ren browser?
+// Detect if we are running inside Tauri or in the browser
 const isTauri =
     typeof window !== "undefined" && !!(window as any).__TAURI_INTERNALS__;
 
-// --- Helper: merge threats by filePath (undgå dubletter) ---
+// Helper: merge threats by filePath so we do not show duplicates
 const mergeThreatsByPath = (existing: Threat[], incoming: Threat[]): Threat[] => {
     const byPath = new Map<string, Threat>();
 
@@ -62,7 +65,7 @@ const mergeThreatsByPath = (existing: Threat[], incoming: Threat[]): Threat[] =>
     return Array.from(byPath.values());
 };
 
-// --- Helper: notifications ---
+// Helper: notifications
 const canUseNotifications =
     typeof window !== "undefined" && "Notification" in window;
 
@@ -74,6 +77,29 @@ const showNotification = (title: string, body: string) => {
     } catch {
         // ignore
     }
+};
+
+// Helper: initial token from localStorage (no hooks here)
+const getInitialToken = (): string | null => {
+    if (typeof window !== "undefined") {
+        return window.localStorage.getItem("stellar_auth_token");
+    }
+    return null;
+};
+
+// Helper: initial dashboard data from localStorage (no hooks here)
+const getInitialDashboard = (): DashboardResponse | null => {
+    if (typeof window !== "undefined") {
+        const raw = window.localStorage.getItem("stellar_dashboard");
+        if (raw) {
+            try {
+                return JSON.parse(raw) as DashboardResponse;
+            } catch {
+                return null;
+            }
+        }
+    }
+    return null;
 };
 
 const App: React.FC = () => {
@@ -88,7 +114,13 @@ const App: React.FC = () => {
     const [status, setStatus] = useState<ProtectionStatus>("protected");
     const [realtimeEnabled, setRealtimeEnabled] = useState<boolean>(true);
 
-    // ✅ ingen sample data – starter tomt
+    // Token + dashboard state (for dashboardcontroller/home endpoint)
+    const [token, setToken] = useState<string | null>(getInitialToken);
+    const [dashboard, setDashboard] = useState<DashboardResponse | null>(
+        getInitialDashboard
+    );
+
+    // No sample data – logs start empty
     const [logs, setLogs] = useState<ScanLogEntry[]>([]);
     const [scanProgress, setScanProgress] = useState<ScanProgress>({
         current: 0,
@@ -107,7 +139,7 @@ const App: React.FC = () => {
     const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
     const [showDeleteModal, setShowDeleteModal] = useState(false);
 
-    // --- Notifikationstilladelse én gang ---
+    // Request notification permission once
     useEffect(() => {
         if (!canUseNotifications) return;
         if (Notification.permission === "default") {
@@ -115,7 +147,7 @@ const App: React.FC = () => {
         }
     }, []);
 
-    // --- Hent gemte logs/threats/quarantine fra localStorage (persistens) ---
+    // Load stored logs/threats/quarantine from localStorage (persistence)
     useEffect(() => {
         if (typeof window === "undefined") return;
 
@@ -150,24 +182,25 @@ const App: React.FC = () => {
         }
     }, []);
 
-    // --- Gem til localStorage når ting ændrer sig ---
+    // Persist logs to localStorage on change
     useEffect(() => {
         if (typeof window === "undefined") return;
         window.localStorage.setItem("stellar_logs", JSON.stringify(logs));
     }, [logs]);
 
+    // Persist threats to localStorage on change
     useEffect(() => {
         if (typeof window === "undefined") return;
         window.localStorage.setItem("stellar_threats", JSON.stringify(threats));
     }, [threats]);
 
+    // Persist quarantine to localStorage on change
     useEffect(() => {
         if (typeof window === "undefined") return;
         window.localStorage.setItem("stellar_quarantine", JSON.stringify(quarantine));
     }, [quarantine]);
 
-
-    // --- Autostart ---
+    // Configure autostart for Tauri
     useEffect(() => {
         if (!isTauri) return;
 
@@ -184,7 +217,7 @@ const App: React.FC = () => {
         })();
     }, []);
 
-    // --- Lyt på scan_progress + scan_finished ---
+    // Listen for scan_progress + scan_finished events from Rust backend
     useEffect(() => {
         if (!isTauri) return;
 
@@ -299,7 +332,7 @@ const App: React.FC = () => {
         };
     }, [realtimeEnabled]);
 
-    // --- Realtime threat detected (fra Rust) ---
+    // Listen for real-time threats from Rust backend
     useEffect(() => {
         if (!isTauri) return;
 
@@ -372,7 +405,7 @@ const App: React.FC = () => {
 
     const startFullScan = async () => {
         if (!isTauri) {
-            // Browser-demo fallback
+            // Browser demo fallback
             setStatus("scanning");
             setScanProgress({ current: 0, total: 100, file: "Simulating scan..." });
 
@@ -437,7 +470,7 @@ const App: React.FC = () => {
         setShowThreatsModal(true);
     };
 
-    // Flyt valgte threats til quarantine + log + backend delete/quarantine
+    // Move selected threats to quarantine + log + backend delete/quarantine
     const handleRemoveThreats = async (ids: number[]) => {
         const nowIso = new Date().toISOString();
         const ts = nowIso.slice(0, 16).replace("T", " ");
@@ -531,7 +564,7 @@ const App: React.FC = () => {
             ...prev,
         ]);
 
-        // evt. senere: invoke("restore_from_quarantine", ...)
+        // Potential future: invoke("restore_from_quarantine", ...)
     };
 
     const handleDeleteQuarantine = async (id: number) => {
@@ -584,11 +617,75 @@ const App: React.FC = () => {
         setPendingRealtimeValue(null);
     };
 
-    const handleLoginSuccess = () => {
+    // Poll dashboard home endpoint every 15 minutes when token is present
+    useEffect(() => {
+        console.log(10);
+        console.log("Calling dashboard home with token", token);
+
+        if (!token) return;
+
+        let cancelled = false;
+
+        const loadDashboard = async () => {
+            try {
+                const res = await fetchDashboard(token);
+                if (cancelled) return;
+
+                setDashboard(res);
+
+                if (typeof window !== "undefined") {
+                    console.log(JSON.stringify(res));
+                    window.localStorage.setItem(
+                        "stellar_dashboard",
+                        JSON.stringify(res)
+                    );
+                }
+            } catch (err) {
+                console.error("Failed to fetch dashboard", err);
+                // Optional: if backend returns 401, you can log out here
+                // if ((err as any)?.status === 401) handleLogout();
+            }
+        };
+
+        // Run once immediately
+        loadDashboard();
+
+        // Then every 15 minutes
+        const intervalId = setInterval(loadDashboard, 15 * 60 * 1000);
+
+        return () => {
+            cancelled = true;
+            clearInterval(intervalId);
+        };
+    }, [token]);
+
+    const handleLoginSuccess = (newToken?: string) => {
         if (typeof window !== "undefined") {
             window.localStorage.setItem("stellar_logged_in", "1");
+            if (newToken) {
+                window.localStorage.setItem("stellar_auth_token", newToken);
+            }
         }
+
+        if (newToken) {
+            setToken(newToken);
+        }
+
         setView("antivirus_dashboard");
+    };
+
+    const handleLogout = () => {
+        if (typeof window !== "undefined") {
+            window.localStorage.removeItem("stellar_logged_in");
+            window.localStorage.removeItem("stellar_auth_token");
+            window.localStorage.removeItem("stellar_dashboard");
+            window.localStorage.removeItem("stellar_user");
+            window.localStorage.removeItem("stellar_subscription_id");
+        }
+
+        setToken(null);
+        setDashboard(null);
+        setView("login");
     };
 
     const rootClass = isTauri
@@ -637,7 +734,9 @@ const App: React.FC = () => {
                                 />
                             )}
 
-                            {view === "antivirus_settings" && <SettingsScreen />}
+                            {view === "antivirus_settings" && (
+                                <SettingsScreen onLogout={handleLogout} dashboard={dashboard} />
+                            )}
 
                             {view === "login" && (
                                 <LoginScreen onAuthenticated={handleLoginSuccess} />
@@ -713,7 +812,10 @@ const App: React.FC = () => {
                                                         fileNames: [entry.fileName],
                                                     });
                                                 } catch (err) {
-                                                    console.error("Failed to delete quarantine file", err);
+                                                    console.error(
+                                                        "Failed to delete quarantine file",
+                                                        err
+                                                    );
                                                 }
                                             }
                                             setQuarantine((prev) =>

@@ -29,15 +29,9 @@ const HeaderBar: React.FC<HeaderBarProps> = ({ realtimeEnabled }) => {
             dotColor: "bg-[#EF4444]",
         };
 
-    const threatDbChip: StatusChipConfig = {
-        id: "threatdb",
-        label: "Threat DB synced",
-        bg: "bg-[#EFF6FF]",
-        text: "text-[#1D4ED8]",
-        dotColor: "bg-[#3B82F6]",
-    };
 
-    const chips = [realtimeChip, threatDbChip];
+
+    const chips = [realtimeChip];
 
     return (
         <header className="h-[72px] px-6 border-b border-[#E5E7EB] bg-white flex items-center justify-between">

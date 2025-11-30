@@ -1,85 +1,128 @@
-import React from "react";
+// src/screens/RegisterScreen.tsx
+
+import React, { useState } from "react";
+import { register } from "../api/auth";
 
 interface RegisterScreenProps {
-    onAuthenticated?: () => void;
+    onAuthenticated?: (token?: string) => void;
+    onGoToLogin?: () => void;
 }
 
-const RegisterScreen: React.FC<RegisterScreenProps> = ({ onAuthenticated }) => {
-    const handleRegister = (e: React.FormEvent) => {
+const RegisterScreen: React.FC<RegisterScreenProps> = ({
+                                                           onAuthenticated,
+                                                           onGoToLogin,
+                                                       }) => {
+    const [username, setUsername] = useState("");
+    const [password, setPassword] = useState("");
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+
+    const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-        onAuthenticated?.();
+        setError(null);
+        setLoading(true);
+
+        try {
+            // register() is typed in auth.ts to return ApiEnvelope
+            const res = await register({ username, password });
+
+            if (!res.token) {
+                throw new Error("No token returned from server");
+            }
+
+            // Store user and subscription metadata locally (optional but useful)
+            if (typeof window !== "undefined") {
+                window.localStorage.setItem(
+                    "stellar_user",
+                    JSON.stringify(res.user)
+                );
+                if (res.subscription_id) {
+                    window.localStorage.setItem(
+                        "stellar_subscription_id",
+                        res.subscription_id
+                    );
+                }
+            }
+
+            onAuthenticated?.(res.token);
+        } catch (err: any) {
+            console.error(err);
+            if (err?.response?.response_message) {
+                setError(err.response.response_message);
+            } else if (err?.message) {
+                setError(err.message);
+            } else {
+                setError("Registration failed. Please try again.");
+            }
+        } finally {
+            setLoading(false);
+        }
     };
 
     return (
-        <div className="h-full flex items-center justify-center">
+        <div className="h-full flex items-center justify-center bg-[#050816]">
             <div className="w-[460px] bg-white rounded-3xl shadow-[0_20px_60px_rgba(15,23,42,0.35)] px-8 py-8">
-                <h1 className="text-xl font-semibold text-[#020617] mb-2">
+                <h1 className="text-xl font-semibold text-[#020617] mb-1">
                     Create your Stellar ID
                 </h1>
-                <p className="text-xs text-[#6B7280] mb-6">
-                    Your Stellar ID keeps your devices, subscriptions and security in one
-                    place.
+                <p className="text-[13px] text-slate-500 mb-6">
+                    Your Stellar ID is used across Stellar Antivirus and the rest of the Stellar ecosystem.
                 </p>
 
-                <form onSubmit={handleRegister} className="space-y-4">
-                    <div className="grid grid-cols-2 gap-3">
-                        <div>
-                            <label className="block text-xs font-medium text-[#4B5563] mb-1">
-                                First name
-                            </label>
-                            <input
-                                type="text"
-                                className="w-full h-9 rounded-xl border border-[#E5E7EB] px-3 text-xs focus:outline-none focus:ring-1 focus:ring-[#2563EB]"
-                                required
-                            />
-                        </div>
-                        <div>
-                            <label className="block text-xs font-medium text-[#4B5563] mb-1">
-                                Last name
-                            </label>
-                            <input
-                                type="text"
-                                className="w-full h-9 rounded-xl border border-[#E5E7EB] px-3 text-xs focus:outline-none focus:ring-1 focus:ring-[#2563EB]"
-                                required
-                            />
-                        </div>
-                    </div>
-
+                <form onSubmit={handleSubmit} className="space-y-4">
                     <div>
-                        <label className="block text-xs font-medium text-[#4B5563] mb-1">
-                            Email (Stellar ID)
+                        <label className="block text-[12px] font-medium text-slate-600 mb-1.5">
+                            Email / Username
                         </label>
                         <input
-                            type="email"
-                            className="w-full h-9 rounded-xl border border-[#E5E7EB] px-3 text-xs focus:outline-none focus:ring-1 focus:ring-[#2563EB]"
-                            placeholder="you@example.com"
+                            type="text"
+                            value={username}
+                            onChange={(e) => setUsername(e.target.value)}
+                            className="w-full h-9 rounded-xl border border-slate-200 px-3 text-[13px] focus:outline-none focus:ring-2 focus:ring-slate-900/80"
+                            autoComplete="username"
                             required
                         />
                     </div>
 
                     <div>
-                        <label className="block text-xs font-medium text-[#4B5563] mb-1">
+                        <label className="block text-[12px] font-medium text-slate-600 mb-1.5">
                             Password
                         </label>
                         <input
                             type="password"
-                            className="w-full h-9 rounded-xl border border-[#E5E7EB] px-3 text-xs focus:outline-none focus:ring-1 focus:ring-[#2563EB]"
-                            placeholder="At least 10 characters"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            className="w-full h-9 rounded-xl border border-slate-200 px-3 text-[13px] focus:outline-none focus:ring-2 focus:ring-slate-900/80"
+                            autoComplete="new-password"
                             required
                         />
-                        <p className="text-[11px] text-[#9CA3AF] mt-1">
-                            Use a strong, unique password. Stellar never stores it in
-                            plaintext.
-                        </p>
                     </div>
+
+                    {error && (
+                        <div className="text-[12px] text-red-600 bg-red-50 border border-red-100 rounded-xl px-3 py-2">
+                            {error}
+                        </div>
+                    )}
 
                     <button
                         type="submit"
-                        className="w-full h-9 rounded-full text-xs font-semibold bg-[#1D4ED8] text-white shadow-[0_10px_30px_rgba(37,99,235,0.6)] hover:bg-[#1E40AF] mt-2"
+                        disabled={loading}
+                        className="w-full h-9 rounded-full text-[13px] font-semibold text.white text-white bg-[#111827] shadow-[0_10px_30px_rgba(15,23,42,0.6)] hover:bg-black disabled:opacity-70 disabled:cursor-not-allowed transition mt-2"
                     >
-                        Create Stellar ID
+                        {loading ? "Creating account..." : "Create Stellar ID"}
                     </button>
                 </form>
+
+                <div className="mt-4 text-[12px] text-slate-500 text-center">
+                    <span>Already have a Stellar ID?</span>{" "}
+                    <button
+                        type="button"
+                        onClick={onGoToLogin}
+                        className="font-semibold text-[#111827] hover:underline"
+                    >
+                        Log in
+                    </button>
+                </div>
             </div>
         </div>
     );
