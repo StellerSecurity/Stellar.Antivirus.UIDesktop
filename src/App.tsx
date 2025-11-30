@@ -236,6 +236,7 @@ const App: React.FC = () => {
         });
 
         listen("scan_finished", (event) => {
+            alert(10);
             const payload = event.payload as any;
             const threatsArray = (payload.threats as [string, string][]) || [];
 

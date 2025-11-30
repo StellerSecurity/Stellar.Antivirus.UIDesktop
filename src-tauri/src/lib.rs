@@ -64,12 +64,13 @@ struct ThreatApiClient {
     threat_db_version: Option<u32>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct ThreatApiFile {
     sha256: String,
     size: Option<u64>,
     extension: Option<String>,
 }
+
 
 #[derive(Serialize)]
 struct ThreatApiRequest {
@@ -151,34 +152,55 @@ fn build_client_payload() -> ThreatApiClient {
 }
 
 fn call_threat_api_batch(files: Vec<ThreatApiFile>) -> Result<Vec<ThreatApiResult>, String> {
+    // If there are no files, there is nothing to look up
     if files.is_empty() {
         return Ok(vec![]);
     }
 
+    // Base URL for the Threat API
     let url = format!("{}{}", API_BASE_URL, API_HASH_CHECK_PATH);
 
-    let req = ThreatApiRequest {
-        client: build_client_payload(),
-        files,
-    };
-
+    // Reuse the same HTTP client for all chunks
     let client = Client::new();
-    let resp = client
-        .post(&url)
-        .json(&req)
-        .send()
-        .map_err(|e| format!("API request error: {e}"))?;
 
-    if !resp.status().is_success() {
-        return Err(format!("API returned HTTP {}", resp.status()));
+    // Collect all results from all chunks here
+    let mut all_results: Vec<ThreatApiResult> = Vec::new();
+
+    // How many files to send per API call.
+    // 500–1000 is usually a good balance between performance and payload size.
+    const CHUNK_SIZE: usize = 1000;
+
+    // Iterate over the files in fixed-size chunks
+    for chunk in files.chunks(CHUNK_SIZE) {
+        // Build request payload for this chunk
+        let req = ThreatApiRequest {
+            client: build_client_payload(),
+            files: chunk.to_vec(), // now valid because ThreatApiFile: Clone
+        };
+
+        // Perform the HTTP request
+        let resp = client
+            .post(&url)
+            .json(&req)
+            .send()
+            .map_err(|e| format!("API request error: {e}"))?;
+
+        if !resp.status().is_success() {
+            return Err(format!("API returned HTTP {}", resp.status()));
+        }
+
+        // Parse JSON response from this chunk
+        let parsed: ThreatApiResponse = resp
+            .json()
+            .map_err(|e| format!("Failed to parse API JSON: {e}"))?;
+
+        // Append results from this chunk to the global list
+        all_results.extend(parsed.results);
     }
 
-    let parsed: ThreatApiResponse = resp
-        .json()
-        .map_err(|e| format!("Failed to parse API JSON: {e}"))?;
-
-    Ok(parsed.results)
+    Ok(all_results)
 }
+
 
 fn call_threat_api_single(hash: &str) -> Result<Option<ThreatApiResult>, String> {
     let file = ThreatApiFile {
@@ -196,154 +218,176 @@ fn call_threat_api_single(hash: &str) -> Result<Option<ThreatApiResult>, String>
 /// Full scan – scanner en masse filer og slår dem op mod API
 #[tauri::command]
 async fn fake_full_scan(app: AppHandle) -> Result<(), String> {
-    // 1) Byg liste over filer (downloads, documents, desktop + lidt recursivt)
-    let mut paths_to_scan: Vec<PathBuf> = Vec::new();
+          // 1) Build a list of files to scan (Downloads, Documents, Desktop – limited recursion)
+          let mut paths_to_scan: Vec<PathBuf> = Vec::new();
 
-    if let Some(downloads) = dirs::download_dir() {
-        for entry in WalkDir::new(downloads).max_depth(3).into_iter().flatten() {
-            if entry.file_type().is_file() {
-                paths_to_scan.push(entry.into_path());
-            }
-        }
-    }
-    if let Some(documents) = dirs::document_dir() {
-        for entry in WalkDir::new(documents).max_depth(3).into_iter().flatten() {
-            if entry.file_type().is_file() {
-                paths_to_scan.push(entry.into_path());
-            }
-        }
-    }
-    if let Some(desktop) = dirs::desktop_dir() {
-        for entry in WalkDir::new(desktop).max_depth(3).into_iter().flatten() {
-            if entry.file_type().is_file() {
-                paths_to_scan.push(entry.into_path());
-            }
-        }
-    }
+          if let Some(downloads) = dirs::download_dir() {
+              for entry in WalkDir::new(downloads)
+                  .max_depth(3)
+                  .into_iter()
+                  .flatten()
+              {
+                  if entry.file_type().is_file() {
+                      paths_to_scan.push(entry.into_path());
+                  }
+              }
+          }
 
-    // Trim så vi ikke dræber maskinen
-    const MAX_FILES: usize = 20_000;
-    if paths_to_scan.len() > MAX_FILES {
-        paths_to_scan.truncate(MAX_FILES);
-    }
+          if let Some(documents) = dirs::document_dir() {
+              for entry in WalkDir::new(documents)
+                  .max_depth(3)
+                  .into_iter()
+                  .flatten()
+              {
+                  if entry.file_type().is_file() {
+                      paths_to_scan.push(entry.into_path());
+                  }
+              }
+          }
 
-    let total = paths_to_scan.len();
-    if total == 0 {
-        let _ = app.emit(
-            "scan_finished",
-            ScanFinishedPayload { threats: vec![] },
-        );
-        return Ok(());
-    }
+          if let Some(desktop) = dirs::desktop_dir() {
+              for entry in WalkDir::new(desktop)
+                  .max_depth(3)
+                  .into_iter()
+                  .flatten()
+              {
+                  if entry.file_type().is_file() {
+                      paths_to_scan.push(entry.into_path());
+                  }
+              }
+          }
 
-    // 2) Hash alle filer og emit progress
-    let mut index_to_path: Vec<(usize, PathBuf, String)> = Vec::with_capacity(total);
+          // Hard test limit: never scan more than 1 file (for debugging)
+          const MAX_FILES: usize = 1;
+          paths_to_scan.truncate(MAX_FILES);
 
-    for (i, path) in paths_to_scan.iter().enumerate() {
-        let file_str = path.to_string_lossy().to_string();
+          let total = paths_to_scan.len();
+          if total == 0 {
+              // No files to scan → immediately tell UI that scan is finished with no threats
+              let _ = app.emit(
+                  "scan_finished",
+                  ScanFinishedPayload { threats: vec![] },
+              );
+              return Ok(());
+          }
 
-        let _ = app.emit(
-            "scan_progress",
-            ScanProgressPayload {
-                file: file_str.clone(),
-                current: i + 1,
-                total,
-            },
-        );
+          // 2) Hash all files and emit scan_progress events to the UI
+          let mut index_to_path: Vec<(usize, PathBuf, String)> = Vec::with_capacity(total);
 
-        if let Some(hash) = sha256_of_file(path) {
-            index_to_path.push((i, path.clone(), hash));
-        }
+          for (i, path) in paths_to_scan.iter().enumerate() {
+              let file_str = path.to_string_lossy().to_string();
 
-        // Lille pause så UI kan følge med
-        if i % 100 == 0 {
-            thread::sleep(Duration::from_millis(5));
-        }
-    }
+              let _ = app.emit(
+                  "scan_progress",
+                  ScanProgressPayload {
+                      file: file_str.clone(),
+                      current: i + 1,
+                      total,
+                  },
+              );
 
-    // 3) Byg batch til API
-    let mut files_for_api: Vec<ThreatApiFile> = Vec::new();
-    for (_idx, path, hash) in &index_to_path {
-        let ext = path
-            .extension()
-            .and_then(|s| s.to_str())
-            .map(|s| s.to_lowercase());
-        let size = fs::metadata(path).ok().map(|m| m.len());
+              if let Some(hash) = sha256_of_file(path) {
+                  index_to_path.push((i, path.clone(), hash));
+              }
 
-        files_for_api.push(ThreatApiFile {
-            sha256: hash.clone(),
-            size,
-            extension: ext,
-        });
-    }
+              // Small pause so the UI has time to update (especially on very fast scans)
+              if i % 100 == 0 {
+                  thread::sleep(Duration::from_millis(5));
+              }
+          }
 
-    // 4) Kald API
-    let api_results = match call_threat_api_batch(files_for_api) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("Full scan API error: {e}");
-            // Send "scan_finished" uden threats så UI ikke hænger
-            let _ = app.emit(
-                "scan_finished",
-                ScanFinishedPayload { threats: vec![] },
-            );
-            return Err(e);
-        }
-    };
+          // 3) Build batch payload for the Threat API
+          let mut files_for_api: Vec<ThreatApiFile> = Vec::new();
+          for (_idx, path, hash) in &index_to_path {
+              let ext = path
+                  .extension()
+                  .and_then(|s| s.to_str())
+                  .map(|s| s.to_lowercase());
+              let size = fs::metadata(path).ok().map(|m| m.len());
 
-    // Map sha256 -> (threat_name, file_path)
-    use std::collections::HashMap;
+              files_for_api.push(ThreatApiFile {
+                  sha256: hash.clone(),
+                  size,
+                  extension: ext,
+              });
+          }
 
-    let mut hash_to_path: HashMap<String, String> = HashMap::new();
-    for (_idx, path, hash) in &index_to_path {
-        hash_to_path.insert(hash.to_lowercase(), path.to_string_lossy().to_string());
-    }
+          // 4) Call the Threat API (this is chunked inside call_threat_api_batch)
+          let api_results = match call_threat_api_batch(files_for_api) {
+              Ok(r) => r,
+              Err(e) => {
+                  eprintln!("Full scan API error: {e}");
+                  // Make sure the UI does not hang if the API fails
+                  let _ = app.emit(
+                      "scan_finished",
+                      ScanFinishedPayload { threats: vec![] },
+                  );
+                  return Err(e);
+              }
+          };
 
-    let mut threats_vec: Vec<(String, String)> = Vec::new();
+          // Map sha256 -> file path for easy lookup when processing API results
+          use std::collections::HashMap;
 
-    for r in api_results {
-        let verdict = r.verdict.to_lowercase();
-        if verdict == "clean" || verdict == "unknown" {
-            continue;
-        }
+          let mut hash_to_path: HashMap<String, String> = HashMap::new();
+          for (_idx, path, hash) in &index_to_path {
+              hash_to_path.insert(
+                  hash.to_lowercase(),
+                  path.to_string_lossy().to_string(),
+              );
+          }
 
-        if let Some(path_str) = hash_to_path.get(&r.sha256.to_lowercase()) {
-            let name = r
-                .signature
-                .as_ref()
-                .map(|s| s.name.clone())
-                .unwrap_or_else(|| "Unknown threat".to_string());
-            threats_vec.push((name, path_str.clone()));
-        }
-    }
+          // Build the final list of (threat_name, file_path) pairs
+          let mut threats_vec: Vec<(String, String)> = Vec::new();
 
-    // 5) Emit scan_finished til React
-    let _ = app.emit(
-        "scan_finished",
-        ScanFinishedPayload {
-            threats: threats_vec.clone(),
-        },
-    );
+          for r in api_results {
+              let verdict = r.verdict.to_lowercase();
+              if verdict == "clean" || verdict == "unknown" {
+                  continue;
+              }
 
-    // 6) Notification når færdig
-    if !threats_vec.is_empty() {
-        let _ = app
-            .notification()
-            .builder()
-            .title("Stellar Antivirus")
-            .body(format!("Full scan completed – {} threat(s) found.", threats_vec.len()))
-            .show();
-    } else {
-        let _ = app
-            .notification()
-            .builder()
-            .title("Stellar Antivirus")
-            .body("Full scan completed – no threats found.")
-            .show();
-    }
+              if let Some(path_str) = hash_to_path.get(&r.sha256.to_lowercase()) {
+                  let name = r
+                      .signature
+                      .as_ref()
+                      .map(|s| s.name.clone())
+                      .unwrap_or_else(|| "Unknown threat".to_string());
 
-    Ok(())
-}
+                  threats_vec.push((name, path_str.clone()));
+              }
+          }
+
+          // 5) Notify React that the scan is finished + pass the list of threats
+          let _ = app.emit(
+              "scan_finished",
+              ScanFinishedPayload {
+                  threats: threats_vec.clone(),
+              },
+          );
+
+          // 6) Show a system notification when the scan completes
+          if !threats_vec.is_empty() {
+              let _ = app
+                  .notification()
+                  .builder()
+                  .title("Stellar Antivirus")
+                  .body(format!(
+                      "Full scan completed – {} threat(s) found.",
+                      threats_vec.len()
+                  ))
+                  .show();
+          } else {
+              let _ = app
+                  .notification()
+                  .builder()
+                  .title("Stellar Antivirus")
+                  .body("Full scan completed – no threats found.")
+                  .show();
+          }
+
+          Ok(())
+      }
+
 
 #[tauri::command]
 fn set_realtime_enabled(enabled: bool) {
