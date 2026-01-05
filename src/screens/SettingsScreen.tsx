@@ -1,151 +1,143 @@
 // src/screens/SettingsScreen.tsx
 import React from "react";
 import type { DashboardResponse } from "../api/dashboard";
+import Button from "../components/Button";
 
 interface SettingsScreenProps {
-    onLogout?: () => void;
-    dashboard?: DashboardResponse | null;
+  onLogout?: () => void;
+  dashboard?: DashboardResponse | null;
 }
 
 const SettingsScreen: React.FC<SettingsScreenProps> = ({
-                                                           onLogout,
-                                                           dashboard,
-                                                       }) => {
-    // Username (Stellar ID) from dashboard, fallback if missing
-    const stellarId = dashboard?.user?.username ?? "Unknown";
+  onLogout,
+  dashboard,
+}) => {
+  // Username (Stellar ID) from dashboard, fallback if missing
+  const stellarId = dashboard?.user?.username ?? "Unknown";
 
-    // Expiry from subscription (ISO string from backend)
-    const expiresAtIso = dashboard?.subscription?.expires_at ?? null;
+  // Expiry from subscription (ISO string from backend)
+  const expiresAtIso = dashboard?.subscription?.expires_at ?? null;
 
-    let expiryDisplay = "—";
-    let daysLeftDisplay: string | number = "—";
+  let expiryDisplay = "—";
+  let daysLeftDisplay: string | number = "—";
 
-    if (expiresAtIso) {
-        const expiryDate = new Date(expiresAtIso);
-        if (!isNaN(expiryDate.getTime())) {
-            expiryDisplay = expiryDate.toISOString().slice(0, 10); // YYYY-MM-DD
+  if (expiresAtIso) {
+    const expiryDate = new Date(expiresAtIso);
+    if (!isNaN(expiryDate.getTime())) {
+      expiryDisplay = expiryDate.toISOString().slice(0, 10); // YYYY-MM-DD
 
-            const now = new Date();
-            const diffMs = expiryDate.getTime() - now.getTime();
-            const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
-            daysLeftDisplay = diffDays > 0 ? diffDays : 0;
-        }
+      const now = new Date();
+      const diffMs = expiryDate.getTime() - now.getTime();
+      const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+      daysLeftDisplay = diffDays > 0 ? diffDays : 0;
     }
+  }
 
-    return (
-        <div className="pt-6 flex flex-col gap-6">
-            <div>
-                <h2 className="text-lg font-semibold text-[#111827] mb-1">
-                    Settings
-                </h2>
-                <p className="text-xs text-[#6B7280]">
-                    Manage your Stellar ID, subscription and support options.
-                </p>
-            </div>
+  return (
+    <div className="pt-6 flex flex-col gap-6">
+      <div>
+        <h2 className="text-[30px] font-semibold font-poppins text-white mb-1">
+          Settings
+        </h2>
+        <p className="text-xs text-[#6B7280]">
+          Manage your Stellar ID, subscription and support options.
+        </p>
+      </div>
 
-            {/* Stellar ID + subscription */}
-            <div className="bg-white rounded-[24px] shadow-[0_16px_40px_rgba(15,23,42,0.06)] px-6 py-5 flex flex-col gap-4">
-                <div>
-                    <div className="text-xs font-semibold text-[#3B82F6] mb-1">
-                        STELLAR ID
-                    </div>
-                    <div className="text-sm font-medium text-[#111827]">
-                        {stellarId}
-                    </div>
-                </div>
-
-                <div className="grid grid-cols-3 gap-4 text-xs">
-                    <div className="bg-[#F3F4FF] rounded-2xl px-4 py-3">
-                        <div className="text-[11px] text-[#6B7280] mb-1">
-                            Subscription
-                        </div>
-                        <div className="text-sm font-semibold text-[#111827]">
-                            Stellar Antivirus
-                        </div>
-                    </div>
-                    <div className="bg-[#ECFDF3] rounded-2xl px-4 py-3">
-                        <div className="text-[11px] text-[#6B7280] mb-1">
-                            Days remaining
-                        </div>
-                        <div className="text-sm font-semibold text-[#166534]">
-                            {daysLeftDisplay !== "—" ? `${daysLeftDisplay} days` : "—"}
-                        </div>
-                    </div>
-                    <div className="bg-[#FEF3C7] rounded-2xl px-4 py-3">
-                        <div className="text-[11px] text-[#92400E] mb-1">
-                            Expires on
-                        </div>
-                        <div className="text-sm font-semibold text-[#92400E]">
-                            {expiryDisplay}
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            {/* Help & support */}
-            <div className="bg.white bg-white rounded-[24px] shadow-[0_16px_40px_rgba(15,23,42,0.06)] px-6 py-5">
-                <div className="flex items-center justify-between mb-4">
-                    <div>
-                        <h3 className="text-sm font-semibold text-[#111827]">
-                            Help & support
-                        </h3>
-                        <p className="text-xs text-[#6B7280]">
-                            Contact Stellar Security if you need assistance.
-                        </p>
-                    </div>
-                </div>
-
-                <div className="grid grid-cols-3 gap-4 text-xs">
-                    <div className="border border-[#E5E7EB] rounded-2xl px-4 py-3">
-                        <div className="text-[11px] text-[#6B7280] mb-1">Signal</div>
-                        <div className="text-sm font-semibold text-[#111827]">
-                            @StellarSecurity
-                        </div>
-                        <div className="text-[11px] text-[#9CA3AF] mt-1">
-                            Preferred for secure chat.
-                        </div>
-                    </div>
-                    <div className="border border-[#E5E7EB] rounded-2xl px-4 py-3">
-                        <div className="text-[11px] text-[#6B7280] mb-1">Email</div>
-                        <div className="text-sm font-semibold text-[#111827]">
-                            info@stellarsecurity.com
-                        </div>
-                        <div className="text-[11px] text-[#9CA3AF] mt-1">
-                            For billing and general questions.
-                        </div>
-                    </div>
-                    <div className="border border-[#E5E7EB] rounded-2xl px-4 py-3">
-                        <div className="text-[11px] text-[#6B7280] mb-1">Website</div>
-                        <div className="text-sm font-semibold text-[#2563EB]">
-                            StellarSecurity.com
-                        </div>
-                        <div className="text-[11px] text-[#9CA3AF] mt-1">
-                            Docs, FAQ and product updates.
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            {/* Log out card */}
-            <div className="bg-white rounded-[24px] shadow-[0_16px_40px_rgba(15,23,42,0.06)] px-6 py-5 flex items-center justify-between">
-                <div>
-                    <div className="text-sm font-semibold text-[#111827] mb-1">
-                        Log out
-                    </div>
-                    <p className="text-[11px] text-[#6B7280]">
-                        Sign out of Stellar Antivirus on this device. You can log in again
-                        with your Stellar ID at any time.
-                    </p>
-                </div>
-                <button
-                    onClick={onLogout}
-                    className="px-4 h-9 rounded-full text-xs font-semibold bg-[#DC2626] text-white shadow-[0_10px_30px_rgba(220,38,38,0.6)] hover:bg-[#B91C1C]"
-                >
-                    Log out
-                </button>
-            </div>
+      {/* Stellar ID + subscription */}
+      <div className="bg-white rounded-[24px] px-6 py-5 flex flex-col gap-4">
+        <div>
+          <div className="text-xs font-semibold text-[#3B82F6] mb-1">
+            STELLAR ID
+          </div>
+          <div className="text-sm font-medium text-[#111827]">{stellarId}</div>
         </div>
-    );
+
+        <div className="grid grid-cols-3 gap-4 text-xs">
+          <div className="bg-[#F3F4FF] rounded-2xl px-4 py-3">
+            <div className="text-[11px] text-[#6B7280] mb-1">Subscription</div>
+            <div className="text-sm font-semibold text-[#111827]">
+              Stellar Antivirus
+            </div>
+          </div>
+          <div className="bg-[#ECFDF3] rounded-2xl px-4 py-3">
+            <div className="text-[11px] text-[#6B7280] mb-1">
+              Days remaining
+            </div>
+            <div className="text-sm font-semibold text-[#166534]">
+              {daysLeftDisplay !== "—" ? `${daysLeftDisplay} days` : "—"}
+            </div>
+          </div>
+          <div className="bg-[#FEF3C7] rounded-2xl px-4 py-3">
+            <div className="text-[11px] text-[#92400E] mb-1">Expires on</div>
+            <div className="text-sm font-semibold text-[#92400E]">
+              {expiryDisplay}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Help & support */}
+      <div className="bg.white bg-white rounded-[24px] px-6 py-5">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="text-sm font-semibold text-[#111827]">
+              Help & support
+            </h3>
+            <p className="text-xs text-[#6B7280]">
+              Contact Stellar Security if you need assistance.
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-3 gap-4 text-xs">
+          <div className="border border-[#E5E7EB] rounded-2xl px-4 py-3">
+            <div className="text-[11px] text-[#6B7280] mb-1">Signal</div>
+            <div className="text-sm font-semibold text-[#111827]">
+              @StellarSecurity
+            </div>
+            <div className="text-[11px] text-[#9CA3AF] mt-1">
+              Preferred for secure chat.
+            </div>
+          </div>
+          <div className="border border-[#E5E7EB] rounded-2xl px-4 py-3">
+            <div className="text-[11px] text-[#6B7280] mb-1">Email</div>
+            <div className="text-sm font-semibold text-[#111827]">
+              info@stellarsecurity.com
+            </div>
+            <div className="text-[11px] text-[#9CA3AF] mt-1">
+              For billing and general questions.
+            </div>
+          </div>
+          <div className="border border-[#E5E7EB] rounded-2xl px-4 py-3">
+            <div className="text-[11px] text-[#6B7280] mb-1">Website</div>
+            <div className="text-sm font-semibold text-[#2563EB]">
+              StellarSecurity.com
+            </div>
+            <div className="text-[11px] text-[#9CA3AF] mt-1">
+              Docs, FAQ and product updates.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Log out card */}
+      <div className="bg-white rounded-[24px] px-6 py-5 flex items-center justify-between">
+        <div>
+          <div className="text-sm font-semibold text-[#111827] mb-1">
+            Log out
+          </div>
+          <p className="text-[11px] text-[#6B7280]">
+            Sign out of Stellar Antivirus on this device. You can log in again
+            with your Stellar ID at any time.
+          </p>
+        </div>
+        <Button onClick={onLogout} className="bg-[#DC2626] hover:bg-[#B91C1C]">
+          Log out
+        </Button>
+      </div>
+    </div>
+  );
 };
 
 export default SettingsScreen;
