@@ -64,18 +64,6 @@ Notifications on:
 
 ---
 
-### 🔄 **Automatic Threat DB Updates**
-Threat DB auto-syncs every hour from:
-
-```
-https://stellarantivirusthreatdb.blob.core.windows.net/threat-db/v1/threats.json
-```
-
-Configurable via `.env`:
-
-```
-VITE_THREAT_DB_URL="https://stellarantivirusthreatdb.blob.core.windows.net/threat-db/v1/threats.json"
-```
 
 ---
 
