@@ -28,8 +28,12 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
     <>
       {/* Subtitle */}
       <div className="flex items-center gap-2 mb-3">
-        <span className="text-primary text-sm">🛡️</span>
-        <span className="text-white text-xs font-semibold uppercase tracking-wide">
+        <img
+          src="/reala-time-protection.svg"
+          alt=""
+          className="w-[15px] h-[19px]"
+        />
+        <span className="text-white text-sm font-semibold uppercase tracking-wide">
           REAL-TIME PROTECTION
         </span>
       </div>
@@ -45,7 +49,7 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
       </p>
 
       {/* Description */}
-      <p className="text-sm text-white/80 mb-6">
+      <p className="text-xs text-[#CFCFFF] mb-6">
         Stellar Antivirus protects your device in real time by finding and
         blocking dangerous files before they can cause harm.
       </p>
@@ -53,21 +57,23 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
       {/* Feature List */}
       <div className="space-y-3 mb-6">
         <div className="flex items-center gap-3">
-          <span className="text-primary text-lg">✓</span>
-          <span className="text-white text-sm">Detects viruses</span>
+          <img src="/blue-tick.svg" alt="" className="w-[14px] h-[10px]" />
+          <span className="text-[#CFCFFF] text-xs">Detects viruses</span>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-primary text-lg">✓</span>
-          <span className="text-white text-sm">Blocks threats instantly</span>
+          <img src="/blue-tick.svg" alt="" className="w-[14px] h-[10px]" />
+          <span className="text-[#CFCFFF] text-xs">
+            Blocks threats instantly
+          </span>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-primary text-lg">✓</span>
-          <span className="text-white text-sm">Real-time protection</span>
+          <img src="/blue-tick.svg" alt="" className="w-[14px] h-[10px]" />
+          <span className="text-[#CFCFFF] text-xs">Real-time protection</span>
         </div>
       </div>
 
       {/* Concluding Statement */}
-      <p className="text-base text-white font-medium mb-8">
+      <p className="text-base text-[#CFCFFF] font-medium mb-8">
         Protection runs quietly in the background.
       </p>
     </>
@@ -78,8 +84,12 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
     <>
       {/* Subtitle */}
       <div className="flex items-center gap-2 mb-3">
-        <span className="text-primary text-sm">⚡</span>
-        <span className="text-white text-xs font-semibold uppercase tracking-wide">
+        <img
+          src="/reala-time-protection.svg"
+          alt=""
+          className="w-[15px] h-[19px]"
+        />
+        <span className="text-[#CFCFFF] text-sm font-semibold uppercase tracking-wide">
           REAL-TIME PROTECTION
         </span>
       </div>
@@ -95,7 +105,7 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
       </p>
 
       {/* Explanation */}
-      <p className="text-sm text-white/80 mb-6">
+      <p className="text-xs text-[#CFCFFF] mb-6">
         Stellar Antivirus checks files using an unique fingerprint. Your actual
         files are never uploaded or shared.
       </p>
@@ -103,32 +113,34 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
       {/* Feature List */}
       <div className="space-y-3 mb-6">
         <div className="flex items-center gap-3">
-          <span className="text-primary text-lg">✓</span>
-          <span className="text-white text-sm">Files stay on your device</span>
+          <img src="/blue-tick.svg" alt="" className="w-[14px] h-[10px]" />
+          <span className="text-[#CFCFFF] text-xs">
+            Files stay on your device
+          </span>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-primary text-lg">✓</span>
-          <span className="text-white text-sm">
+          <img src="/blue-tick.svg" alt="" className="w-[14px] h-[10px]" />
+          <span className="text-[#CFCFFF] text-xs">
             Open-source client (fully transparent)
           </span>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-primary text-lg">✓</span>
-          <span className="text-white text-sm">
+          <img src="/blue-tick.svg" alt="" className="w-[14px] h-[10px]" />
+          <span className="text-[#CFCFFF] text-xs">
             Built with a secure Rust engine
           </span>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-red-500 text-lg">⊕</span>
-          <span className="text-white text-sm">Hosted in Switzerland</span>
+          <img src="/hosted.svg" alt="" className="w-[20px] h-[20px]" />
+          <span className="text-[#CFCFFF] text-xs">Hosted in Switzerland</span>
         </div>
       </div>
 
       {/* Concluding Statements */}
-      <p className="text-base text-white font-medium mb-2">
+      <p className="text-base text-[#CFCFFF] font-medium mb-2">
         Protected by strict Swiss data-protection laws.
       </p>
-      <p className="text-base text-white font-medium mb-8">
+      <p className="text-base text-[#CFCFFF] font-medium mb-8">
         Private. Transparent. Secure.
       </p>
     </>
@@ -184,14 +196,22 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
     <>
       {/* Subtitle */}
       <div className="flex items-center gap-2 mb-3">
-        <span className="text-primary text-sm">⚡</span>
-        <span className="text-white text-xs font-semibold uppercase tracking-wide">
+        <img
+          src="/reala-time-protection.svg"
+          alt=""
+          className="w-[15px] h-[19px]"
+        />
+        <span className="text-[#CFCFFF] text-sm font-semibold uppercase tracking-wide">
           REAL-TIME PROTECTION
         </span>
       </div>
 
       {/* Main Heading */}
-      <h1 className="text-[30px] font-semibold font-poppins text-white mb-4">
+      <h1
+        className={`text-[30px] font-semibold font-poppins ${
+          authMode === "login" ? "text-white" : "text-[#CFCFFF]"
+        } mb-4`}
+      >
         {authMode === "login"
           ? "3. Log in to Stellar Antivirus"
           : "3. Create your Stellar ID"}
@@ -204,7 +224,7 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
           the Stellar ecosystem.
         </p>
       ) : (
-        <p className="text-sm text-white/80 mb-6">
+        <p className="text-sm text-[#CFCFFF] mb-6">
           Your Stellar ID is used across Stellar Antivirus and the rest of the
           Stellar ecosystem.
         </p>
@@ -220,6 +240,7 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
           placeholder="Your email"
           required
           autoComplete={authMode === "login" ? "email" : "username"}
+          labelClassName="!text-[#CFCFFF]"
         />
 
         <Input
@@ -232,6 +253,7 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
           autoComplete={
             authMode === "login" ? "current-password" : "new-password"
           }
+          labelClassName="!text-[#CFCFFF]"
         />
 
         {error && (
@@ -253,7 +275,7 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
           {authMode === "login" ? (
             <button
               type="button"
-              className="text-primary text-sm hover:underline"
+              className="text-[#CFCFFF] text-sm hover:underline"
               onClick={() => setAuthMode("register")}
             >
               CREATE STELLAR ID
@@ -261,7 +283,7 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
           ) : (
             <button
               type="button"
-              className="text-primary text-sm hover:underline"
+              className="text-[#CFCFFF] text-sm hover:underline"
               onClick={() => setAuthMode("login")}
             >
               Already have a Stellar ID? Log in
@@ -277,8 +299,12 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
     <>
       {/* Subtitle */}
       <div className="flex items-center gap-2 mb-3">
-        <span className="text-primary text-sm">⚡</span>
-        <span className="text-white text-xs font-semibold uppercase tracking-wide">
+        <img
+          src="/reala-time-protection.svg"
+          alt=""
+          className="w-[15px] h-[19px]"
+        />
+        <span className="text-[#CFCFFF] text-sm font-semibold uppercase tracking-wide">
           REAL-TIME PROTECTION
         </span>
       </div>
@@ -294,7 +320,7 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
       </p>
 
       {/* Explanation */}
-      <p className="text-sm text-white/80 mb-6">
+      <p className="text-xs text-[#CFCFFF] mb-6">
         To scan for threats, Stellar Antivirus needs access to your files. This
         is only used to check for viruses — nothing else.
       </p>
@@ -302,31 +328,33 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
       {/* Assurances List */}
       <div className="space-y-3 mb-6">
         <div className="flex items-center gap-3">
-          <span className="text-primary text-lg">✓</span>
-          <span className="text-white text-sm">
+          <img src="/blue-tick.svg" alt="" className="w-[14px] h-[10px]" />
+          <span className="text-[#CFCFFF] text-xs">
             We do not read your documents
           </span>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-primary text-lg">✓</span>
-          <span className="text-white text-sm">
+          <img src="/blue-tick.svg" alt="" className="w-[14px] h-[10px]" />
+          <span className="text-[#CFCFFF] text-xs">
             We do not upload your files
           </span>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-primary text-lg">✓</span>
-          <span className="text-white text-sm">
+          <img src="/blue-tick.svg" alt="" className="w-[14px] h-[10px]" />
+          <span className="text-[#CFCFFF] text-xs">
             We only scan locally on your device
           </span>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-primary text-lg">✓</span>
-          <span className="text-white text-sm">You stay in full control</span>
+          <img src="/blue-tick.svg" alt="" className="w-[14px] h-[10px]" />
+          <span className="text-[#CFCFFF] text-xs">
+            You stay in full control
+          </span>
         </div>
       </div>
 
       {/* Call to Action */}
-      <p className="text-base text-white font-semibold mb-8">
+      <p className="text-base text-[#CFCFFF] font-semibold mb-8">
         Allow access to stay protected.
       </p>
     </>
@@ -335,68 +363,9 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
   return (
     <div className="h-full flex items-center justify-center relative">
       <div className="flex items-center justify-center p-[90px] gap-5">
-        {step === 4 ? (
-          // Step 4: Shield icon with lightning bolt
-          <div className="relative flex items-center justify-center">
-            {/* Sparkling stars */}
-            <div className="absolute -top-8 -left-8 text-primary text-2xl animate-pulse">
-              ✨
-            </div>
-            <div
-              className="absolute -top-4 -left-12 text-primary text-xl animate-pulse"
-              style={{ animationDelay: "300ms" }}
-            >
-              ✨
-            </div>
-            {/* Glowing shield */}
-            <div className="relative w-48 h-48 flex items-center justify-center">
-              <div
-                className="absolute inset-0 bg-primary/20 blur-2xl animate-pulse"
-                style={{ borderRadius: "50%" }}
-              />
-              <div className="relative w-full h-full flex items-center justify-center">
-                {/* Shield shape using SVG */}
-                <svg
-                  width="192"
-                  height="192"
-                  viewBox="0 0 192 192"
-                  className="absolute inset-0"
-                >
-                  <defs>
-                    <radialGradient id="shieldGradient" cx="50%" cy="30%">
-                      <stop offset="0%" stopColor="#2761FC" stopOpacity="0.6" />
-                      <stop
-                        offset="70%"
-                        stopColor="#2761FC"
-                        stopOpacity="0.3"
-                      />
-                      <stop
-                        offset="100%"
-                        stopColor="#2761FC"
-                        stopOpacity="0.1"
-                      />
-                    </radialGradient>
-                  </defs>
-                  {/* Shield path */}
-                  <path
-                    d="M96 20 L40 40 L40 100 C40 130, 60 150, 96 172 C132 150, 152 130, 152 100 L152 40 Z"
-                    fill="url(#shieldGradient)"
-                    stroke="#2761FC"
-                    strokeWidth="2"
-                    strokeOpacity="0.5"
-                    className="backdrop-blur-sm"
-                  />
-                </svg>
-                {/* Lightning bolt inside shield */}
-                <span className="text-6xl text-primary relative z-10">⚡</span>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="image">
-            <img src="/App.png" alt="Onboarding" />
-          </div>
-        )}
+        <div className="image">
+          <img src="/App.png" alt="Onboarding" />
+        </div>
         <div className="w-[420px]">
           {step === 1
             ? renderStep1()
@@ -413,7 +382,7 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
         {[1, 2, 3, 4].map((stepNum) => (
           <div
             key={stepNum}
-            className={`h-1 w-8 rounded ${
+            className={`h-1 w-[63px] rounded ${
               stepNum === step ? "bg-primary" : "bg-white/30"
             }`}
           />
@@ -423,14 +392,11 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
       {/* Action Buttons - Absolute bottom right */}
       <div className="absolute bottom-8 right-8 flex items-center gap-3">
         {step === 3 ? null : step === 4 ? (
-          <Button
-            onClick={onAllow}
-            className="!bg-[#10B981] hover:!bg-[#059669] text-white"
-          >
+          <Button onClick={onAllow} className="!bg-[#60D38E] text-white">
             ALLOW
           </Button>
         ) : (
-          <Button onClick={onNext} className="!bg-white text-[#62626A]">
+          <Button onClick={onNext} className="!bg-white !text-[#62626A]">
             NEXT
           </Button>
         )}

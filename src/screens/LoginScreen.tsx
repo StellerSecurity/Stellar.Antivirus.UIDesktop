@@ -67,8 +67,12 @@ const LoginScreen: React.FC<LoginScreenProps> = ({
         <div className="w-[420px]">
           {/* Subtitle */}
           <div className="flex items-center gap-2 mb-3">
-            <span className="text-primary text-sm">⚡</span>
-            <span className="text-white text-xs font-semibold uppercase tracking-wide">
+            <img
+              src="/reala-time-protection.svg"
+              alt=""
+              className="w-[15px] h-[19px]"
+            />
+            <span className="text-white text-sm font-semibold uppercase tracking-wide">
               REAL-TIME PROTECTION
             </span>
           </div>
@@ -90,6 +94,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({
                 autoComplete="username"
                 placeholder="Your email"
                 required
+                labelClassName="!text-[#CFCFFF]"
               />
 
               <Input
@@ -100,6 +105,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({
                 autoComplete="current-password"
                 placeholder="Your password"
                 required
+                labelClassName="!text-[#CFCFFF]"
               />
 
               {error && (
@@ -115,7 +121,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({
               </Button>
               <button
                 type="button"
-                className="text-primary text-sm hover:underline"
+                className="text-[#62626A] text-[12px] font-semibold uppercase bg-[#F6F6FD] px-4 py-2 rounded-full hover:opacity-90"
               >
                 FORGOT PASSWORD?
               </button>
@@ -129,7 +135,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({
         {[1, 2, 3, 4, 5].map((stepNum) => (
           <div
             key={stepNum}
-            className={`h-1 w-8 rounded ${
+            className={`h-1 w-[63px] rounded ${
               stepNum === 3 ? "bg-primary" : "bg-white/30"
             }`}
           />

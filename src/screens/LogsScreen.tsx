@@ -38,10 +38,10 @@ const LogsScreen: React.FC<LogsScreenProps> = ({
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h1 className="text-[30px] font-semibold font-poppins text-white">
+          <h1 className="text-[14px] font-semibold uppercase text-[#2761FC] mb-[12px]">
             Activity & Quarantine
           </h1>
-          <p className="text-xs text-[#6B7280]">
+          <p className="text-[12px] font-normal text-[#62626A] pb-[12px] mb-[12px] border-b-2 border-[#62626A]">
             Review recent scans and files moved to quarantine.
           </p>
         </div>
@@ -51,24 +51,39 @@ const LogsScreen: React.FC<LogsScreenProps> = ({
             onClick={onClearLogs}
             disabled={!hasLogs}
             variant="secondary"
-            className={!hasLogs ? "opacity-50" : ""}
+            className={`text-[12px] font-semibold text-[#62626A] bg-[#F6F6FD] ${
+              !hasLogs ? "opacity-50" : ""
+            }`}
           >
             Clear logs
           </Button>
-          <Button onClick={onViewThreats}>View detected threats</Button>
+          <Button
+            onClick={onViewThreats}
+            className="text-[12px] font-semibold text-[#62626A] bg-[#F6F6FD]"
+          >
+            View detected threats
+          </Button>
         </div>
       </div>
 
       {/* Tabs */}
-      <div className="inline-flex mb-4 bg-[#E5E7EB] rounded-full p-1">
+      <div className="inline-flex border-2 border-[#F6F6FD] mb-4 rounded-full p-1">
         <button
-          className={tabButtonCls(activeTab === "activity")}
+          className={`px-4 h-8 rounded-full text-[11px] font-medium uppercase ${
+            activeTab === "activity"
+              ? "bg-[#62626A] text-[#62626A]"
+              : "text-[#6B7280]"
+          }`}
           onClick={() => setActiveTab("activity")}
         >
           Activity Log
         </button>
         <button
-          className={tabButtonCls(activeTab === "quarantine")}
+          className={`px-4 h-8 rounded-full text-[11px] font-medium uppercase ${
+            activeTab === "quarantine"
+              ? "bg-[#2761FC] text-white"
+              : "text-[#6B7280]"
+          }`}
           onClick={() => setActiveTab("quarantine")}
         >
           Quarantine
@@ -121,7 +136,7 @@ const ActivityList: React.FC<{ logs: ScanLogEntry[] }> = ({ logs }) => {
                   }`}
                 />
                 <div>
-                  <div className="flex items-center gap-2 mb-1">
+                  <div className="flex items-center gap-2 mb-[12px]">
                     <span className="text-[11px] font-semibold uppercase tracking-wide text-[#6B7280]">
                       {isRealtime ? "REAL-TIME" : "FULL SCAN"}
                     </span>
@@ -233,10 +248,5 @@ const QuarantineList: React.FC<QuarantineListProps> = ({
     </div>
   );
 };
-
-const tabButtonCls = (active: boolean) =>
-  `px-4 h-8 rounded-full text-[11px] font-medium ${
-    active ? "bg-white text-[#111827]" : "text-[#6B7280]"
-  }`;
 
 export default LogsScreen;

@@ -82,6 +82,7 @@ const RegisterScreen: React.FC<RegisterScreenProps> = ({
                 onChange={(e) => setUsername(e.target.value)}
                 autoComplete="username"
                 required
+                labelClassName="!text-[#CFCFFF]"
               />
 
               <Input
@@ -91,6 +92,7 @@ const RegisterScreen: React.FC<RegisterScreenProps> = ({
                 onChange={(e) => setPassword(e.target.value)}
                 autoComplete="new-password"
                 required
+                labelClassName="!text-[#CFCFFF]"
               />
 
               {error && (
@@ -105,13 +107,13 @@ const RegisterScreen: React.FC<RegisterScreenProps> = ({
             </Button>
           </form>
 
-          <div className="mt-4 text-[12px] text-slate-500 text-center">
+          <div className="mt-4 text-[12px] text-[#CFCFFF] text-center bg-[#F6F6FD] rounded-full px-4 py-2">
             <span>Already have a Stellar ID?</span>{" "}
             <Button
               type="button"
               onClick={onGoToLogin}
               variant="secondary"
-              className="bg-transparent border-none hover:underline"
+              className="bg-transparent border-none hover:underline text-[#CFCFFF]"
             >
               Log in
             </Button>

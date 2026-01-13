@@ -11,6 +11,7 @@
 body {
   margin: 0;
   font-family: 'Poppins', sans-serif;
+  background: #0B0C19;
 }
 
 #root {
@@ -46,6 +47,17 @@ button {
   font-weight: 600;
   padding: 8px 16px;
 }
+
+/* Input autofill styles */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active {
+  -webkit-box-shadow: 0 0 0 30px #1D1E34 inset !important;
+  -webkit-text-fill-color: #CFCFFF !important;
+  caret-color: #CFCFFF;
+}
+
 
 .stellar-scan-orb {
   width: 140px;

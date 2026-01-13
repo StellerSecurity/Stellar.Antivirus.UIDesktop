@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import Sidebar from "./components/Sidebar";
 import HeaderBar from "./components/HeaderBar";
 import DashboardScreen from "./screens/DashboardScreen";
@@ -122,13 +122,46 @@ const App: React.FC = () => {
     getInitialDashboard
   );
 
-  // No sample data – logs start empty
-  const [logs, setLogs] = useState<ScanLogEntry[]>([]);
+  // Sample data for recent activity
+  const [logs, setLogs] = useState<ScanLogEntry[]>([
+    {
+      id: 1,
+      timestamp: "No scans yet",
+      scan_type: "realtime",
+      result: "threats_found",
+      details: "Run a scan to create your first activity entry.",
+      bgColor: "bg-white",
+      textColor: "text-[#62626A]",
+      borderColor: "border-[#F6F6FD]",
+    },
+    {
+      id: 2,
+      timestamp: "2025-12-01 — 17:04",
+      scan_type: "realtime",
+      result: "clean",
+      details: "Real-time protection stopped a threat from running.",
+      bgColor: "bg-gradient-to-r from-white to-[#FFE9E9]",
+      textColor: "text-[#F96262]",
+      borderColor: "border-[#FFE9E9]",
+    },
+    {
+      id: 3,
+      timestamp: "2025-12-01 — 17:04",
+      scan_type: "realtime",
+      result: "clean",
+      details: "Real-time protection found no threats.",
+      bgColor: "bg-gradient-to-r from-white to-[#A6FFC7]",
+      textColor: "text-[#60D38E]",
+      borderColor: "border-[#A6FFC7]",
+    },
+  ]);
   const [scanProgress, setScanProgress] = useState<ScanProgress>({
     current: 0,
     total: 0,
     file: "",
   });
+
+  const scanIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const [showRealtimeConfirm, setShowRealtimeConfirm] = useState(false);
   const [pendingRealtimeValue, setPendingRealtimeValue] = useState<
@@ -414,19 +447,21 @@ const App: React.FC = () => {
     if (!isTauri) {
       // Browser demo fallback
       setStatus("scanning");
-      setScanProgress({ current: 0, total: 100, file: "Simulating scan..." });
+      setScanProgress({ current: 0, total: 100, file: "" });
 
       let current = 0;
       const interval = setInterval(() => {
         current += 5;
         if (current >= 100) {
           clearInterval(interval);
+          scanIntervalRef.current = null;
           setStatus(realtimeEnabled ? "protected" : "not_protected");
           setScanProgress({ current: 0, total: 0, file: "" });
         } else {
-          setScanProgress({ current, total: 100, file: "Simulating scan..." });
+          setScanProgress({ current, total: 100, file: "" });
         }
       }, 200);
+      scanIntervalRef.current = interval;
 
       return;
     }
@@ -453,6 +488,15 @@ const App: React.FC = () => {
     }
   };
 
+  const stopFullScan = () => {
+    if (scanIntervalRef.current) {
+      clearInterval(scanIntervalRef.current);
+      scanIntervalRef.current = null;
+    }
+    setStatus(realtimeEnabled ? "protected" : "not_protected");
+    setScanProgress({ current: 0, total: 0, file: "" });
+  };
+
   const lastFullScan = logs.find((l) => l.scan_type === "full_scan") || null;
 
   const isAntivirusView =
@@ -471,6 +515,14 @@ const App: React.FC = () => {
     if (v === "dashboard") setView("antivirus_dashboard");
     else if (v === "logs") setView("antivirus_logs");
     else setView("antivirus_settings");
+  };
+
+  const handleOpenActivityLog = () => {
+    setView("antivirus_logs");
+  };
+
+  const handleClearLogs = () => {
+    setLogs([]);
   };
 
   const handleOpenThreatsModal = () => {
@@ -754,23 +806,25 @@ const App: React.FC = () => {
             <Sidebar
               current={currentSidebarView}
               onChange={handleSidebarChange}
+              onLogout={handleLogout}
             />
           )}
 
           <div className="flex-1 flex flex-col min-h-0">
             {isAntivirusView && <HeaderBar realtimeEnabled={realtimeEnabled} />}
 
-            <main className="flex-1 overflow-y-auto">
+            <main className="flex-1 overflow-y-auto bg-[#F6F6FD] px-[20px] py-[20px]">
               {view === "antivirus_dashboard" && (
                 <DashboardScreen
                   status={status}
                   realtimeEnabled={realtimeEnabled}
                   onToggleRealtime={handleToggleRealtime}
                   onFullScan={startFullScan}
+                  onStopScan={stopFullScan}
                   lastScan={lastFullScan}
                   recentLogs={logs.slice(0, 4)}
                   scanProgress={scanProgress}
-                  onViewThreats={handleOpenThreatsModal}
+                  onOpenActivityLog={handleOpenActivityLog}
                 />
               )}
 
@@ -781,6 +835,7 @@ const App: React.FC = () => {
                   onViewThreats={handleOpenThreatsModal}
                   onRestoreQuarantine={handleRestoreQuarantine}
                   onDeleteQuarantine={handleDeleteQuarantine}
+                  onClearLogs={handleClearLogs}
                 />
               )}
 
@@ -793,30 +848,72 @@ const App: React.FC = () => {
 
         {/* Modal: confirm realtime off */}
         {showRealtimeConfirm && (
-          <div className="absolute inset-0 bg-black/40 flex items-center justify-center z-50">
-            <div className="w-[420px] bg-white rounded-3xl px-6 py-6">
-              <h3 className="text-sm font-semibold text-[#111827] mb-2">
-                Turn off real-time protection?
-              </h3>
-              <p className="text-xs text-[#6B7280] mb-3">
-                Real-time protection helps block malware the moment it touches
-                your system. If you turn it off, Stellar Antivirus will only
-                scan when you run a manual scan.
-              </p>
-              <p className="text-xs text-[#B91C1C] mb-4">
-                We strongly recommend keeping it enabled unless you know exactly
-                what you&apos;re doing.
-              </p>
-              <div className="flex justify-end gap-2">
-                <Button onClick={cancelDisableRealtime} variant="secondary">
-                  Keep enabled
-                </Button>
-                <Button
-                  onClick={confirmDisableRealtime}
-                  className="bg-[#DC2626] hover:bg-[#B91C1C]"
+          <div className="absolute inset-0 bg-[#0B0C1980] backdrop-blur-[10px] flex items-center justify-center z-50">
+            <div className="w-[960px] h-[480px] bg-[#0B0C1980] rounded-3xl relative overflow-hidden flex flex-col">
+              {/* Close button */}
+              <div className="absolute top-4 right-4 w-[19px] h-[19px] border-2 border-[#2761FC] flex items-center justify-center">
+                <button
+                  onClick={cancelDisableRealtime}
+                  className="w-[15px] h-[15px] rounded-full bg-white flex items-center justify-center hover:opacity-80 transition"
                 >
-                  Turn off anyway
-                </Button>
+                  <span className="text-[#374151] text-sm">×</span>
+                </button>
+              </div>
+
+              <div className="flex flex-1">
+                {/* Left side - Image */}
+                <div className="w-1/2 h-full flex items-center justify-center p-8">
+                  <div className="image">
+                    <img src="/App.png" alt="Stellar Antivirus" />
+                  </div>
+                </div>
+
+                {/* Right side - Content */}
+                <div className="w-1/2 pt-[20px] pb-[25px] px-6 flex flex-col">
+                  {/* REAL-TIME PROTECTION label */}
+                  <div className="flex items-center gap-2 mb-3">
+                    <img
+                      src="/reala-time-protection.svg"
+                      alt=""
+                      className="w-[15px] h-[19px]"
+                    />
+                    <span className="text-sm font-semibold text-white uppercase tracking-wide">
+                      REAL-TIME PROTECTION
+                    </span>
+                  </div>
+
+                  {/* Heading */}
+                  <h1 className="text-[30px] font-semibold font-poppins text-white mb-4">
+                    Turn off real-time protection?
+                  </h1>
+
+                  {/* Paragraphs */}
+                  <p className="text-[12px] font-normal text-[#CFCFFF] mb-3">
+                    Real-time protection helps block malware the moment it
+                    touches your system. If you turn it off, Stellar Antivirus
+                    will only scan when you run a manual scan.
+                  </p>
+                  <p className="text-[12px] font-normal text-[#CFCFFF] mb-6">
+                    We strongly recommend keeping it enabled unless you know
+                    exactly what you&apos;re doing.
+                  </p>
+
+                  {/* Buttons */}
+                  <div className="flex justify-end gap-3 mt-auto">
+                    <Button
+                      onClick={confirmDisableRealtime}
+                      className="bg-white !text-[#62626A] hover:bg-white/90"
+                    >
+                      TURN OFF ANYWAY
+                    </Button>
+                    <Button
+                      onClick={cancelDisableRealtime}
+                      className="bg-[#2761FC] text-white hover:bg-[#1D4ED8]"
+                    >
+                      KEEP ACTIVE
+                    </Button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -824,7 +921,7 @@ const App: React.FC = () => {
 
         {/* Modal: delete quarantined file */}
         {showDeleteModal && (
-          <div className="absolute inset-0 bg-black/40 flex items-center justify-center z-50">
+          <div className="absolute inset-0 bg-[#0B0C1980] backdrop-blur-[10px] flex items-center justify-center z-50">
             <div className="w-[380px] bg-white rounded-3xl px-6 py-6">
               <h3 className="text-sm font-semibold text-[#111827] mb-2">
                 Delete file permanently?
