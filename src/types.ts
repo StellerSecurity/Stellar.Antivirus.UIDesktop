@@ -1,4 +1,4 @@
-export type ProtectionStatus = "protected" | "not_protected" | "scanning";
+export type ProtectionStatus = "protected" | "not_protected" | "scanning" | "at_risk";
 
 export type ScanType = "realtime" | "full_scan";
 
@@ -27,4 +27,12 @@ export interface Threat {
   detectedAt?: string;
   source?: ThreatSource;
   status?: ThreatStatus;
+}
+export interface QuarantineEntry {
+  id: number;
+  fileName: string;
+  originalPath: string;
+  quarantinedAt: string;
+  detection: string;
+  source?: ThreatSource;
 }

@@ -44,13 +44,13 @@ const DashboardScreen: React.FC<Props> = ({
   const currentFileDisplay =
     scanProgress && scanProgress.file
       ? (() => {
-          const full = scanProgress.file;
-          const parts = full.split(/[\\/]/); // virker på både Windows og Linux
-          const file = parts.pop() ?? "";
-          const parent = parts.pop() ?? "";
-          const short = parent ? `${parent}/${file}` : file;
-          return { full, short };
-        })()
+        const full = scanProgress.file;
+        const parts = full.split(/[\\/]/); // virker på både Windows og Linux
+        const file = parts.pop() ?? "";
+        const parent = parts.pop() ?? "";
+        const short = parent ? `${parent}/${file}` : file;
+        return { full, short };
+      })()
       : null;
 
   return (
@@ -77,9 +77,8 @@ const DashboardScreen: React.FC<Props> = ({
                 Status
               </span>
               <span
-                className={`text-[14px] font-semibold ${
-                  realtimeEnabled ? "text-[#2761FC]" : "text-[#111827]"
-                }`}
+                className={`text-[14px] font-semibold ${realtimeEnabled ? "text-[#2761FC]" : "text-[#111827]"
+                  }`}
               >
                 {realtimeEnabled ? "Enabled" : "Disabled"}
               </span>
@@ -95,11 +94,19 @@ const DashboardScreen: React.FC<Props> = ({
         {/* Full scan card */}
         <div className="bg-gradient-to-br from-[#2563EB] to-[#1D4ED8] rounded-[24px] px-[22px] py-[21px] text-white flex flex-col justify-between">
           <div>
-            <div className="flex items-center gap-2 mb-2">
-              <img src="/dashboard/dashboard.svg" alt="" className="w-4 h-4" />
-              <span className="text-[14px] font-semibold text-white">
-                FULL DISK SCAN
-              </span>
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <img src="/dashboard/dashboard.svg" alt="" className="w-4 h-4" />
+                <span className="text-[14px] font-semibold text-white">
+                  FULL DISK SCAN
+                </span>
+              </div>
+              <button
+                type="button"
+                className="bg-[#60D38E] text-[#fff] text-[12px] font-bold px-3 py-1 rounded-full hover:opacity-90 transition uppercase h-[24px]"
+              >
+                Quick Scan
+              </button>
             </div>
             <h2 className="text-[30px] font-semibold font-poppins mb-[12px]">
               Scan your entire device
@@ -114,9 +121,8 @@ const DashboardScreen: React.FC<Props> = ({
             <Button
               onClick={onFullScan}
               disabled={isScanning}
-              className={`flex-1 py-2 max-w-[160px] ${
-                isScanning ? "bg-[#4578FF]" : "bg-[#60D38E]"
-              }`}
+              className={`flex-1 py-2 max-w-[160px] ${isScanning ? "!bg-[#4578FF]" : "!bg-[#60D38E]"
+                }`}
             >
               <span className="flex items-center gap-2 uppercase justify-around">
                 {isScanning ? "Scanning..." : "Run Full Scan"}
@@ -176,11 +182,7 @@ const DashboardScreen: React.FC<Props> = ({
                     <span className="text-[14px] font-semibold text-white">
                       {lastScan.timestamp}
                     </span>
-                    <span className="text-[14px] font-semibold text-white">
-                      {lastScan.result === "clean"
-                        ? "No threats found"
-                        : "Threats found"}
-                    </span>
+
                   </>
                 ) : (
                   <span className="text-[14px] font-semibold text-white">
@@ -196,12 +198,12 @@ const DashboardScreen: React.FC<Props> = ({
       {/* Scanning animation + progress */}
       <div className="relative bg-gradient-to-br from-[#2563EB] to-[#1D4ED8] rounded-[24px] px-7 py-5 flex items-center gap-6 text-white">
         {/* STOP SCAN button - positioned top right */}
-        <Button
+        <button
           onClick={onStopScan}
-          className="absolute top-5 right-7 !text-[12px] font-semibold py-0 px-[9px] !text-[#62626A] bg-white !h-[20px] z-10"
+          className="absolute rounded-full top-5 right-7 !text-[12px] font-semibold py-[0.5px] px-[9px] !text-[#62626A] bg-white !h-[20px] z-10"
         >
           STOP SCAN
-        </Button>
+        </button>
         {/* Circular progress indicator */}
         <div className="flex items-center justify-center w-[170px] h-[145px] border-2 border-[#4578FF] rounded-[24px]">
           <Spinner
@@ -302,40 +304,53 @@ const DashboardScreen: React.FC<Props> = ({
         ) : (
           <div className="space-y-2">
             {recentLogs.map((log) => {
-              const isError = log.result === "threats_found";
+              const isThreatFound = log.result === "threats_found";
               const isRealtime = log.scan_type === "realtime";
+              const isThreatRemoved =
+                (log.details || "").toLowerCase().includes("moved to quarantine") ||
+                (log.details || "").toLowerCase().includes("removed");
 
-              // Use colors from log entry if provided, otherwise determine styling based on log type
-              const bgColor =
-                log.bgColor || (isError ? "bg-[#FEE2E2]" : "bg-[#D1FAE5]");
-              const borderColor =
-                log.borderColor ||
-                (isError ? "border-[#FCA5A5]" : "border-[#86EFAC]");
-              const textColor =
-                log.textColor ||
-                (isError ? "text-[#DC2626]" : "text-[#16A34A]");
+              const GRADIENTS = {
+                white: "linear-gradient(282deg, rgba(246, 246, 253, 1) 28%, rgba(255, 255, 255, 1) 100%)",
+                red: "linear-gradient(282deg, rgba(255, 233, 233, 1) 28%, rgba(255, 255, 255, 1) 100%)",
+                green: "linear-gradient(282deg, rgba(166, 255, 199, 1) 28%, rgba(255, 255, 255, 1) 100%)",
+              };
+
+              let background = GRADIENTS.white;
+              let borderColor = "border-[#E5E7EB]";
+              let textColor = "text-[#6B7280]";
+
+              if (isThreatFound) {
+                background = GRADIENTS.red;
+                borderColor = "border-[#FFCCCC]";
+                textColor = "text-[#F87171]";
+              } else if (isThreatRemoved) {
+                background = GRADIENTS.green;
+                borderColor = "border-[#6EE7B7]";
+                textColor = "text-[#34D399]";
+              } else {
+                // Clean / Neutral -> White gradient
+                background = GRADIENTS.white;
+                borderColor = "border-[#E5E7EB]";
+                textColor = "text-[#6B7280]";
+              }
 
               return (
                 <button
                   key={log.id}
                   type="button"
                   onClick={onOpenActivityLog}
-                  className={`w-full flex items-center justify-between border-2  rounded-2xl border ${bgColor} ${borderColor} cursor-pointer hover:opacity-90 transition`}
+                  className={`w-full flex items-center justify-between rounded-full border px-5 py-3 ${borderColor} ${textColor} cursor-pointer hover:opacity-90 transition`}
+                  style={{ background }}
                 >
-                  <span
-                    className={`text-[12px] py-[8px] font-normal ${textColor}`}
-                  >
+                  <span className="text-[12px] font-medium">
                     {log.details ||
                       (isRealtime ? "Real-time protection" : "Full scan")}
                   </span>
-                  <div className="flex items-center gap-1 text-[12px]">
-                    <span className="text-[12px] py-[8px] font-normal text-[#62626A]">
-                      {log.timestamp || "2025-12-01 — 17:04"}
-                    </span>
-                    <span className="w-1 h-1 rounded-full bg-[#62626A]"></span>
-                    <span className="text-[12px] py-[8px] font-normal text-[#62626A]">
-                      Real-time protection
-                    </span>
+                  <div className="flex items-center gap-2 text-[12px] opacity-90 font-semibold text-[#62626A]">
+                    <span className="font-[400]">{log.timestamp.replace(" ", " — ")}</span>
+                    <span className="opacity-60">•</span>
+                    <span className="font-[400]">{isRealtime ? "Real-time protection" : "Full scan"}</span>
                   </div>
                 </button>
               );
@@ -360,9 +375,8 @@ const Toggle: React.FC<ToggleProps> = ({ enabled, disabled, onChange }) => {
       disabled={disabled}
       onClick={() => !disabled && onChange(!enabled)}
       className={`relative w-[64px] h-[32px] rounded-full transition flex items-center px-1
-      ${enabled ? "bg-[#2563EB]" : "bg-[#E5E7EB]"} ${
-        disabled ? "opacity-60 cursor-not-allowed" : "cursor-pointer"
-      }`}
+      ${enabled ? "bg-[#2563EB]" : "bg-[#E5E7EB]"} ${disabled ? "opacity-60 cursor-not-allowed" : "cursor-pointer"
+        }`}
     >
       {enabled && (
         <span className="absolute left-3 text-[12px] font-semibold text-white pointer-events-none z-10">
@@ -371,9 +385,8 @@ const Toggle: React.FC<ToggleProps> = ({ enabled, disabled, onChange }) => {
       )}
       <span
         className={`w-6 h-6 rounded-full bg-white transform transition-transform
-        ${enabled ? "translate-x-[32px]" : "translate-x-0"} ${
-          enabled ? "z-20" : ""
-        }`}
+        ${enabled ? "translate-x-[32px]" : "translate-x-0"} ${enabled ? "z-20" : ""
+          }`}
       />
     </button>
   );

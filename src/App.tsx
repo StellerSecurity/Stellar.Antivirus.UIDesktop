@@ -7,7 +7,7 @@ import SettingsScreen from "./screens/SettingsScreen";
 import OnboardingScreen from "./screens/OnboardingScreen";
 import ThreatsModal from "./components/ThreatsModal";
 import Button from "./components/Button";
-import type { ProtectionStatus, ScanLogEntry, Threat } from "./types";
+import type { ProtectionStatus, ScanLogEntry, Threat, QuarantineEntry } from "./types";
 import {
   isEnabled as isAutostartEnabled,
   enable as enableAutostart,
@@ -19,6 +19,8 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 
 import { fetchDashboard } from "./api/dashboard";
 import type { DashboardResponse } from "./api/dashboard";
+import Img from '../public/Icon-toffee.svg'
+import Img1 from '../public/Icon-x-circle.svg'
 
 type View =
   | "onboarding_step1"
@@ -36,14 +38,6 @@ interface ScanProgress {
   total: number;
   file: string;
 }
-
-type QuarantineEntry = {
-  id: number;
-  fileName: string;
-  originalPath: string;
-  quarantinedAt: string;
-  detection: string;
-};
 
 // Detect if we are running inside Tauri or in the browser
 const isTauri =
@@ -123,38 +117,7 @@ const App: React.FC = () => {
   );
 
   // Sample data for recent activity
-  const [logs, setLogs] = useState<ScanLogEntry[]>([
-    {
-      id: 1,
-      timestamp: "No scans yet",
-      scan_type: "realtime",
-      result: "threats_found",
-      details: "Run a scan to create your first activity entry.",
-      bgColor: "bg-white",
-      textColor: "text-[#62626A]",
-      borderColor: "border-[#F6F6FD]",
-    },
-    {
-      id: 2,
-      timestamp: "2025-12-01 — 17:04",
-      scan_type: "realtime",
-      result: "clean",
-      details: "Real-time protection stopped a threat from running.",
-      bgColor: "bg-gradient-to-r from-white to-[#FFE9E9]",
-      textColor: "text-[#F96262]",
-      borderColor: "border-[#FFE9E9]",
-    },
-    {
-      id: 3,
-      timestamp: "2025-12-01 — 17:04",
-      scan_type: "realtime",
-      result: "clean",
-      details: "Real-time protection found no threats.",
-      bgColor: "bg-gradient-to-r from-white to-[#A6FFC7]",
-      textColor: "text-[#60D38E]",
-      borderColor: "border-[#A6FFC7]",
-    },
-  ]);
+  const [logs, setLogs] = useState<ScanLogEntry[]>([]);
   const [scanProgress, setScanProgress] = useState<ScanProgress>({
     current: 0,
     total: 0,
@@ -179,7 +142,7 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!canUseNotifications) return;
     if (Notification.permission === "default") {
-      Notification.requestPermission().catch(() => {});
+      Notification.requestPermission().catch(() => { });
     }
   }, []);
 
@@ -275,14 +238,12 @@ const App: React.FC = () => {
     });
 
     listen("scan_finished", (event) => {
-      alert(10);
+
       const payload = event.payload as any;
       const threatsArray = (payload.threats as [string, string][]) || [];
 
       const now = new Date();
       const ts = now.toISOString().slice(0, 16).replace("T", " ");
-
-      setStatus(realtimeEnabled ? "protected" : "not_protected");
 
       if (threatsArray.length > 0) {
         const nowIso = now.toISOString();
@@ -297,13 +258,13 @@ const App: React.FC = () => {
           status: "active",
         }));
 
+        setStatus("at_risk");
         setThreats((prev) => mergeThreatsByPath(prev, mapped));
         setShowThreatsModal(true);
 
         showNotification(
           "Stellar Antivirus – threats found",
-          `${mapped.length} threat${
-            mapped.length === 1 ? "" : "s"
+          `${mapped.length} threat${mapped.length === 1 ? "" : "s"
           } detected during full scan.`
         );
 
@@ -331,6 +292,7 @@ const App: React.FC = () => {
           ];
         });
       } else {
+        setStatus(realtimeEnabled ? "protected" : "not_protected");
         showNotification(
           "Stellar Antivirus – scan completed",
           "Full system scan finished. No threats found."
@@ -403,15 +365,13 @@ const App: React.FC = () => {
 
       showNotification(
         "Stellar Antivirus – threat blocked",
-        `${mapped.length} threat${
-          mapped.length === 1 ? "" : "s"
+        `${mapped.length} threat${mapped.length === 1 ? "" : "s"
         } blocked in real-time.`
       );
 
       setLogs((prev) => {
-        const details = `Real-time protection blocked ${mapped.length} threat${
-          mapped.length === 1 ? "" : "s"
-        }.`;
+        const details = `Real-time protection blocked ${mapped.length} threat${mapped.length === 1 ? "" : "s"
+          }.`;
         const last = prev[0];
         if (
           last &&
@@ -455,8 +415,55 @@ const App: React.FC = () => {
         if (current >= 100) {
           clearInterval(interval);
           scanIntervalRef.current = null;
-          setStatus(realtimeEnabled ? "protected" : "not_protected");
+          setStatus("at_risk");
           setScanProgress({ current: 0, total: 0, file: "" });
+
+          // Mock threats for demo
+          const now = new Date();
+          const nowIso = now.toISOString();
+          const ts = nowIso.slice(0, 16).replace("T", " ");
+
+          const demoThreats: Threat[] = [
+            {
+              id: Date.now(),
+              fileName: "eicar.com",
+              filePath: "C:\\Downloads\\eicar.com",
+              detection: "EICAR-Test-File",
+              recommendedAction: "delete",
+              detectedAt: nowIso,
+              source: "full_scan",
+              status: "active",
+            },
+            {
+              id: Date.now() + 1,
+              fileName: "suspicious_script.js",
+              filePath: "C:\\Temp\\suspicious_script.js",
+              detection: "Trojan.Script.Generic",
+              recommendedAction: "quarantine",
+              detectedAt: nowIso,
+              source: "full_scan",
+              status: "active",
+            },
+          ];
+
+          setThreats((prev) => mergeThreatsByPath(prev, demoThreats));
+          setShowThreatsModal(true);
+
+          setLogs((prev) => [
+            {
+              id: prev.length + 1,
+              timestamp: ts,
+              scan_type: "full_scan",
+              result: "threats_found",
+              details: `${demoThreats.length} threats were found in system scan.`,
+            },
+            ...prev,
+          ]);
+
+          showNotification(
+            "Stellar Antivirus – threats found",
+            `${demoThreats.length} threats detected during full scan.`
+          );
         } else {
           setScanProgress({ current, total: 100, file: "" });
         }
@@ -508,8 +515,8 @@ const App: React.FC = () => {
     view === "antivirus_dashboard"
       ? "dashboard"
       : view === "antivirus_logs"
-      ? "logs"
-      : "settings";
+        ? "logs"
+        : "settings";
 
   const handleSidebarChange = (v: SidebarView) => {
     if (v === "dashboard") setView("antivirus_dashboard");
@@ -549,6 +556,7 @@ const App: React.FC = () => {
       originalPath: t.filePath,
       quarantinedAt: ts,
       detection: t.detection || "Threat",
+      source: t.source,
     }));
 
     if (isTauri && paths.length > 0) {
@@ -563,9 +571,8 @@ const App: React.FC = () => {
             timestamp: ts,
             scan_type: "full_scan",
             result: "clean",
-            details: `${removedCount} threat${
-              removedCount === 1 ? "" : "s"
-            } moved to quarantine.`,
+            details: `${removedCount} threat${removedCount === 1 ? "" : "s"
+              } moved to quarantine.`,
           },
           ...prev,
         ]);
@@ -589,16 +596,23 @@ const App: React.FC = () => {
           timestamp: ts,
           scan_type: "full_scan",
           result: "clean",
-          details: `${removedCount} threat${
-            removedCount === 1 ? "" : "s"
-          } removed from list (demo only).`,
+          details: `${removedCount} threat${removedCount === 1 ? "" : "s"
+            } removed from list (demo only).`,
         },
         ...prev,
       ]);
+
+      setQuarantine((prev) => [...newEntries, ...prev]);
     }
 
-    setThreats((prev) => prev.filter((t) => !ids.includes(t.id)));
-    setShowThreatsModal(false);
+    setThreats((prev) => {
+      const remaining = prev.filter((t) => !ids.includes(t.id));
+      if (remaining.length === 0) {
+        setStatus(realtimeEnabled ? "protected" : "not_protected");
+        setShowThreatsModal(false);
+      }
+      return remaining;
+    });
   };
 
   const handleRestoreQuarantine = (id: number) => {
@@ -642,7 +656,7 @@ const App: React.FC = () => {
     setRealtimeEnabled(true);
     setStatus("protected");
     if (isTauri) {
-      invoke("set_realtime_enabled", { enabled: true }).catch(() => {});
+      invoke("set_realtime_enabled", { enabled: true }).catch(() => { });
     }
   };
 
@@ -653,7 +667,7 @@ const App: React.FC = () => {
     setPendingRealtimeValue(null);
 
     if (isTauri) {
-      invoke("set_realtime_enabled", { enabled: false }).catch(() => {});
+      invoke("set_realtime_enabled", { enabled: false }).catch(() => { });
     }
 
     const ts = new Date().toISOString().slice(0, 16).replace("T", " ");
@@ -676,8 +690,7 @@ const App: React.FC = () => {
 
   // Poll dashboard home endpoint every 15 minutes when token is present
   useEffect(() => {
-    console.log(10);
-    console.log("Calling dashboard home with token", token);
+
 
     if (!token) return;
 
@@ -691,7 +704,7 @@ const App: React.FC = () => {
         setDashboard(res);
 
         if (typeof window !== "undefined") {
-          console.log(JSON.stringify(res));
+
           window.localStorage.setItem("stellar_dashboard", JSON.stringify(res));
         }
       } catch (err) {
@@ -776,10 +789,10 @@ const App: React.FC = () => {
       view === "onboarding_step1"
         ? 1
         : view === "onboarding_step2"
-        ? 2
-        : view === "onboarding_step3"
-        ? 3
-        : 4;
+          ? 2
+          : view === "onboarding_step3"
+            ? 3
+            : 4;
     return (
       <OnboardingScreen
         step={step}
@@ -815,6 +828,7 @@ const App: React.FC = () => {
 
             <main className="flex-1 overflow-y-auto bg-[#F6F6FD] px-[20px] py-[20px]">
               {view === "antivirus_dashboard" && (
+                // <DashboardScreenStep1/>
                 <DashboardScreen
                   status={status}
                   realtimeEnabled={realtimeEnabled}
@@ -849,7 +863,7 @@ const App: React.FC = () => {
         {/* Modal: confirm realtime off */}
         {showRealtimeConfirm && (
           <div className="absolute inset-0 bg-[#0B0C1980] backdrop-blur-[10px] flex items-center justify-center z-50">
-            <div className="w-[960px] h-[480px] bg-[#0B0C1980] rounded-3xl relative overflow-hidden flex flex-col">
+            <div className="w-[960px] h-[480px] bg-[#0B0C1980] rounded-3xl relative overflow-hidden flex flex-col justify-between">
               {/* Close button */}
               <div className="absolute top-4 right-4 w-[19px] h-[19px] border-2 border-[#2761FC] flex items-center justify-center">
                 <button
@@ -919,53 +933,106 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* Modal: delete quarantined file */}
         {showDeleteModal && (
-          <div className="absolute inset-0 bg-[#0B0C1980] backdrop-blur-[10px] flex items-center justify-center z-50">
-            <div className="w-[380px] bg-white rounded-3xl px-6 py-6">
-              <h3 className="text-sm font-semibold text-[#111827] mb-2">
-                Delete file permanently?
-              </h3>
-              <p className="text-xs text-[#6B7280] mb-3">
-                This will permanently delete the selected file from quarantine.
-              </p>
-              <div className="flex justify-end gap-2">
-                <Button
+          <div className="fixed inset-0 z-40 bg-[#0B0C1980] flex items-center justify-center backdrop-blur-[10px]">
+            <div className="bg-[#0B0C1980] w-[960px] max-h-[600px] flex flex-col overflow-hidden shadow-2xl rounded-xl h-[500px] ">
+              {/* Header */}
+              <div className="flex items-center justify-between px-6 pt-3">
+                <div className="flex items-end gap-2">
+                  <img src={Img} alt="" />
+                  <span className="text-[14px] font-semibold text-white uppercase tracking-wider opacity-90">ACTIVITY & QUARANTINE</span>
+                </div>
+                <button
                   onClick={() => setShowDeleteModal(false)}
-                  variant="secondary"
+                  className="text-gray-400 hover:text-white transition-colors"
                 >
-                  Cancel
-                </Button>
-                <Button
+                    <img src={Img1} alt="" className="w-4 h-4 " />
+                </button>
+              </div>
+
+              {/* Content */}
+              <div className="px-6 py-6">
+                <h2 className="text-[30px] font-semibold text-white leading-tight font-poppins">
+                  Delete file permanently?
+                </h2>
+                <p className="text-[12px] text-[#CFCFFF] mt-4">
+                  This will permanently delete the selected file from quarantine.
+                </p>
+
+                {/* File Info Card */}
+                {(() => {
+                  const entry = quarantine.find((q) => q.id === pendingDeleteId);
+                  if (!entry) return null;
+
+                  const protectionLevel =
+                    entry.source === "full_scan"
+                      ? "Full scan"
+                      : "Real-time protection";
+
+                  return (
+                    <div className="bg-white rounded-[20px] p-4 mb-6 mt-4">
+                      <div className="">
+                        <div className="">
+                          <div className=" mb-1">
+                            <span className="text-[#F96262] text-[14px] font-semibold   ">
+                              [EXE]   {entry.fileName}
+                            </span>
+
+                          </div>
+
+                        </div>
+                        <div className="flex justify-between">
+                          <p className="text-[#F96262] text-xs break-all">
+                            {entry.originalPath}
+                          </p>
+                          <div className="flex gap-1 items-center gap-2">
+                            <p className="text-[#62626A] text-xs whitespace-nowrap">
+                              {entry.quarantinedAt}
+                            </p>
+                            <p className="text-[#62626A] text-xs ">
+                              {protectionLevel}
+                            </p>
+                          </div>
+
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* Footer */}
+              <div className="flex items-center justify-end gap-3 px-6 py-4 rounded-b-lg mt-auto">
+                <button
+                  onClick={() => setShowDeleteModal(false)}
+                  className="px-5 py-2 text-sm font-medium text-white bg-[#4A4A54] hover:bg-[#525260] rounded-md transition-colors"
+                >
+                  CANCEL
+                </button>
+                <button
                   onClick={async () => {
                     if (pendingDeleteId != null) {
-                      const entry = quarantine.find(
-                        (q) => q.id === pendingDeleteId
-                      );
+                      const entry = quarantine.find((q) => q.id === pendingDeleteId);
                       if (entry && isTauri) {
                         try {
                           await invoke("delete_quarantine_files", {
                             fileNames: [entry.fileName],
                           });
                         } catch (err) {
-                          console.error(
-                            "Failed to delete quarantine file",
-                            err
-                          );
+                          console.error("Failed to delete quarantine file", err);
                         }
                       }
-                      setQuarantine((prev) =>
-                        prev.filter((q) => q.id !== pendingDeleteId)
-                      );
+                      setQuarantine((prev) => prev.filter((q) => q.id !== pendingDeleteId));
                     }
                     setShowDeleteModal(false);
                   }}
-                  className="bg-[#DC2626] hover:bg-[#B91C1C]"
+                  className="px-5 py-2 text-sm font-medium text-white bg-[#DC2626] hover:bg-[#B91C1C] rounded-md transition-colors"
                 >
-                  Delete
-                </Button>
+                  DELETE
+                </button>
               </div>
             </div>
+            
           </div>
         )}
 

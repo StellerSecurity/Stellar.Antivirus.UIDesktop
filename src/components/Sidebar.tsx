@@ -100,26 +100,31 @@ const SidebarItem: React.FC<ItemProps> = ({
   onClick,
   isLogout,
 }) => {
-  const iconColor = isLogout
-    ? "text-red-500"
-    : active
-    ? "text-[#2761FC]"
-    : "text-white";
-
   const textColor = isLogout
     ? "text-red-500"
     : active
-    ? "text-[#2761FC]"
-    : "text-white";
+      ? "text-[#2761FC]"
+      : "text-white";
 
   return (
     <button
       onClick={onClick}
-      className={`w-full flex items-center gap-3 px-3 py-3 rounded-2xl text-[14px] font-semibold font-poppins transition ${
-        active ? "bg-[#F6F6FD]" : ""
-      }`}
+      className="w-full flex items-center gap-3 px-3 py-3 rounded-2xl text-[14px] font-semibold font-poppins transition hover:opacity-80"
     >
-      <img src={icon} alt="" className={`w-5 h-5 ${iconColor}`} />
+      <div
+        className={`w-5 h-5 ${textColor}`}
+        style={{
+          maskImage: `url(${icon})`,
+          WebkitMaskImage: `url(${icon})`,
+          maskSize: "contain",
+          WebkitMaskSize: "contain",
+          maskRepeat: "no-repeat",
+          WebkitMaskRepeat: "no-repeat",
+          maskPosition: "center",
+          WebkitMaskPosition: "center",
+          backgroundColor: "currentColor",
+        }}
+      />
       <span className={textColor}>{label}</span>
     </button>
   );
