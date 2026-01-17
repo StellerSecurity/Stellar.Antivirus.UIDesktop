@@ -17,7 +17,6 @@ const Spinner: React.FC<SpinnerProps> = ({
   className = "",
   bgStrokeColor = "#E5E7EB",
   progressStrokeColor = "#6B7280",
-  showPercentage = false,
 }) => {
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;

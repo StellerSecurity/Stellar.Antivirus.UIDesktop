@@ -127,9 +127,6 @@ const App: React.FC = () => {
   const scanIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const [showRealtimeConfirm, setShowRealtimeConfirm] = useState(false);
-  const [pendingRealtimeValue, setPendingRealtimeValue] = useState<
-    boolean | null
-  >(null);
 
   const [showThreatsModal, setShowThreatsModal] = useState(false);
   const [threats, setThreats] = useState<Threat[]>([]);
@@ -648,7 +645,6 @@ const App: React.FC = () => {
 
   const handleToggleRealtime = (enabled: boolean) => {
     if (!enabled) {
-      setPendingRealtimeValue(false);
       setShowRealtimeConfirm(true);
       return;
     }
@@ -664,7 +660,6 @@ const App: React.FC = () => {
     setRealtimeEnabled(false);
     setStatus("not_protected");
     setShowRealtimeConfirm(false);
-    setPendingRealtimeValue(null);
 
     if (isTauri) {
       invoke("set_realtime_enabled", { enabled: false }).catch(() => { });
@@ -685,7 +680,6 @@ const App: React.FC = () => {
 
   const cancelDisableRealtime = () => {
     setShowRealtimeConfirm(false);
-    setPendingRealtimeValue(null);
   };
 
   // Poll dashboard home endpoint every 15 minutes when token is present

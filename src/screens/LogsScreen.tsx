@@ -1,6 +1,5 @@
 import React, { useState } from "react";
 import type { ScanLogEntry } from "../types";
-import Button from "../components/Button";
 
 type QuarantineEntry = {
   id: number;
