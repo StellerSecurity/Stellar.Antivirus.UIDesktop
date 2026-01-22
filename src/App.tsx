@@ -7,7 +7,12 @@ import SettingsScreen from "./screens/SettingsScreen";
 import OnboardingScreen from "./screens/OnboardingScreen";
 import ThreatsModal from "./components/ThreatsModal";
 import Button from "./components/Button";
-import type { ProtectionStatus, ScanLogEntry, Threat, QuarantineEntry } from "./types";
+import type {
+  ProtectionStatus,
+  ScanLogEntry,
+  Threat,
+  QuarantineEntry,
+} from "./types";
 import {
   isEnabled as isAutostartEnabled,
   enable as enableAutostart,
@@ -19,8 +24,8 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 
 import { fetchDashboard } from "./api/dashboard";
 import type { DashboardResponse } from "./api/dashboard";
-import Img from '../public/Icon-toffee.svg'
-import Img1 from '../public/Icon-x-circle.svg'
+import Img from "../public/Icon-toffee.svg";
+import Img1 from "../public/Icon-x-circle.svg";
 
 type View =
   | "onboarding_step1"
@@ -139,7 +144,7 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!canUseNotifications) return;
     if (Notification.permission === "default") {
-      Notification.requestPermission().catch(() => { });
+      Notification.requestPermission().catch(() => {});
     }
   }, []);
 
@@ -235,7 +240,6 @@ const App: React.FC = () => {
     });
 
     listen("scan_finished", (event) => {
-
       const payload = event.payload as any;
       const threatsArray = (payload.threats as [string, string][]) || [];
 
@@ -261,7 +265,8 @@ const App: React.FC = () => {
 
         showNotification(
           "Stellar Antivirus – threats found",
-          `${mapped.length} threat${mapped.length === 1 ? "" : "s"
+          `${mapped.length} threat${
+            mapped.length === 1 ? "" : "s"
           } detected during full scan.`
         );
 
@@ -362,13 +367,15 @@ const App: React.FC = () => {
 
       showNotification(
         "Stellar Antivirus – threat blocked",
-        `${mapped.length} threat${mapped.length === 1 ? "" : "s"
+        `${mapped.length} threat${
+          mapped.length === 1 ? "" : "s"
         } blocked in real-time.`
       );
 
       setLogs((prev) => {
-        const details = `Real-time protection blocked ${mapped.length} threat${mapped.length === 1 ? "" : "s"
-          }.`;
+        const details = `Real-time protection blocked ${mapped.length} threat${
+          mapped.length === 1 ? "" : "s"
+        }.`;
         const last = prev[0];
         if (
           last &&
@@ -512,8 +519,8 @@ const App: React.FC = () => {
     view === "antivirus_dashboard"
       ? "dashboard"
       : view === "antivirus_logs"
-        ? "logs"
-        : "settings";
+      ? "logs"
+      : "settings";
 
   const handleSidebarChange = (v: SidebarView) => {
     if (v === "dashboard") setView("antivirus_dashboard");
@@ -568,8 +575,9 @@ const App: React.FC = () => {
             timestamp: ts,
             scan_type: "full_scan",
             result: "clean",
-            details: `${removedCount} threat${removedCount === 1 ? "" : "s"
-              } moved to quarantine.`,
+            details: `${removedCount} threat${
+              removedCount === 1 ? "" : "s"
+            } moved to quarantine.`,
           },
           ...prev,
         ]);
@@ -593,8 +601,9 @@ const App: React.FC = () => {
           timestamp: ts,
           scan_type: "full_scan",
           result: "clean",
-          details: `${removedCount} threat${removedCount === 1 ? "" : "s"
-            } removed from list (demo only).`,
+          details: `${removedCount} threat${
+            removedCount === 1 ? "" : "s"
+          } removed from list (demo only).`,
         },
         ...prev,
       ]);
@@ -652,7 +661,7 @@ const App: React.FC = () => {
     setRealtimeEnabled(true);
     setStatus("protected");
     if (isTauri) {
-      invoke("set_realtime_enabled", { enabled: true }).catch(() => { });
+      invoke("set_realtime_enabled", { enabled: true }).catch(() => {});
     }
   };
 
@@ -662,7 +671,7 @@ const App: React.FC = () => {
     setShowRealtimeConfirm(false);
 
     if (isTauri) {
-      invoke("set_realtime_enabled", { enabled: false }).catch(() => { });
+      invoke("set_realtime_enabled", { enabled: false }).catch(() => {});
     }
 
     const ts = new Date().toISOString().slice(0, 16).replace("T", " ");
@@ -684,8 +693,6 @@ const App: React.FC = () => {
 
   // Poll dashboard home endpoint every 15 minutes when token is present
   useEffect(() => {
-
-
     if (!token) return;
 
     let cancelled = false;
@@ -698,7 +705,6 @@ const App: React.FC = () => {
         setDashboard(res);
 
         if (typeof window !== "undefined") {
-
           window.localStorage.setItem("stellar_dashboard", JSON.stringify(res));
         }
       } catch (err) {
@@ -783,10 +789,10 @@ const App: React.FC = () => {
       view === "onboarding_step1"
         ? 1
         : view === "onboarding_step2"
-          ? 2
-          : view === "onboarding_step3"
-            ? 3
-            : 4;
+        ? 2
+        : view === "onboarding_step3"
+        ? 3
+        : 4;
     return (
       <OnboardingScreen
         step={step}
@@ -803,7 +809,7 @@ const App: React.FC = () => {
 
   const shellClass = isTauri
     ? "flex-1 bg-[#F4F6FB] flex flex-col relative min-h-0"
-    : "w-[1200px] h-[680px] rounded-[32px] flex flex-col relative overflow-hidden";
+    : "w-[1200px] h-[680px] flex flex-col relative overflow-hidden";
 
   return (
     <div className={rootClass}>
@@ -934,13 +940,15 @@ const App: React.FC = () => {
               <div className="flex items-center justify-between px-6 pt-3">
                 <div className="flex items-end gap-2">
                   <img src={Img} alt="" />
-                  <span className="text-[14px] font-semibold text-white uppercase tracking-wider opacity-90">ACTIVITY & QUARANTINE</span>
+                  <span className="text-[14px] font-semibold text-white uppercase tracking-wider opacity-90">
+                    ACTIVITY & QUARANTINE
+                  </span>
                 </div>
                 <button
                   onClick={() => setShowDeleteModal(false)}
                   className="text-gray-400 hover:text-white transition-colors"
                 >
-                    <img src={Img1} alt="" className="w-4 h-4 " />
+                  <img src={Img1} alt="" className="w-4 h-4 " />
                 </button>
               </div>
 
@@ -950,12 +958,15 @@ const App: React.FC = () => {
                   Delete file permanently?
                 </h2>
                 <p className="text-[12px] text-[#CFCFFF] mt-4">
-                  This will permanently delete the selected file from quarantine.
+                  This will permanently delete the selected file from
+                  quarantine.
                 </p>
 
                 {/* File Info Card */}
                 {(() => {
-                  const entry = quarantine.find((q) => q.id === pendingDeleteId);
+                  const entry = quarantine.find(
+                    (q) => q.id === pendingDeleteId
+                  );
                   if (!entry) return null;
 
                   const protectionLevel =
@@ -969,11 +980,9 @@ const App: React.FC = () => {
                         <div className="">
                           <div className=" mb-1">
                             <span className="text-[#F96262] text-[14px] font-semibold   ">
-                              [EXE]   {entry.fileName}
+                              [EXE] {entry.fileName}
                             </span>
-
                           </div>
-
                         </div>
                         <div className="flex justify-between">
                           <p className="text-[#F96262] text-xs break-all">
@@ -987,7 +996,6 @@ const App: React.FC = () => {
                               {protectionLevel}
                             </p>
                           </div>
-
                         </div>
                       </div>
                     </div>
@@ -1006,17 +1014,24 @@ const App: React.FC = () => {
                 <button
                   onClick={async () => {
                     if (pendingDeleteId != null) {
-                      const entry = quarantine.find((q) => q.id === pendingDeleteId);
+                      const entry = quarantine.find(
+                        (q) => q.id === pendingDeleteId
+                      );
                       if (entry && isTauri) {
                         try {
                           await invoke("delete_quarantine_files", {
                             fileNames: [entry.fileName],
                           });
                         } catch (err) {
-                          console.error("Failed to delete quarantine file", err);
+                          console.error(
+                            "Failed to delete quarantine file",
+                            err
+                          );
                         }
                       }
-                      setQuarantine((prev) => prev.filter((q) => q.id !== pendingDeleteId));
+                      setQuarantine((prev) =>
+                        prev.filter((q) => q.id !== pendingDeleteId)
+                      );
                     }
                     setShowDeleteModal(false);
                   }}
@@ -1026,7 +1041,6 @@ const App: React.FC = () => {
                 </button>
               </div>
             </div>
-            
           </div>
         )}
 

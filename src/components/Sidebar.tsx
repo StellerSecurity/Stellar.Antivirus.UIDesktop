@@ -10,7 +10,7 @@ interface Props {
 
 const Sidebar: React.FC<Props> = ({ current, onChange, onLogout }) => {
   return (
-    <aside className="w-[240px] bg-[#0B0C19] text-white flex flex-col px-[20px] py-[14px] rounded-l-[32px]">
+    <aside className="w-[240px] bg-[#0B0C19] text-white flex flex-col px-[20px] py-[14px]">
       {/* Logo Section */}
       <div className="flex items-center gap-3 mb-8">
         <img
@@ -103,8 +103,8 @@ const SidebarItem: React.FC<ItemProps> = ({
   const textColor = isLogout
     ? "text-red-500"
     : active
-      ? "text-[#2761FC]"
-      : "text-white";
+    ? "text-[#2761FC]"
+    : "text-white";
 
   return (
     <button
