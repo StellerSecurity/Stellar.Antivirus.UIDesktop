@@ -12,8 +12,8 @@ const SettingsScreen: React.FC<SettingsScreenProps> = ({
   onLogout,
   dashboard,
 }) => {
-  // Username (Stellar ID) from dashboard, fallback if missing
-  const stellarId = dashboard?.user?.username ?? "user@example.com";
+  // Email (Stellar ID) from dashboard, fallback if missing
+  const stellarId = dashboard?.user?.email ?? "user@example.com";
 
   // Expiry from subscription (ISO string from backend)
   const expiresAtIso = dashboard?.subscription?.expires_at ?? null;
@@ -21,15 +21,23 @@ const SettingsScreen: React.FC<SettingsScreenProps> = ({
   let expiryDisplay = "—";
   let daysLeftDisplay: string | number = "—";
 
-  if (expiresAtIso) {
+  // Use remaining_days from API if available, otherwise calculate from expires_at
+  if (dashboard?.subscription?.remaining_days !== undefined) {
+    daysLeftDisplay = dashboard.subscription.remaining_days;
+  } else if (expiresAtIso) {
     const expiryDate = new Date(expiresAtIso);
     if (!isNaN(expiryDate.getTime())) {
-      expiryDisplay = expiryDate.toISOString().slice(0, 10); // YYYY-MM-DD
-
       const now = new Date();
       const diffMs = expiryDate.getTime() - now.getTime();
       const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
       daysLeftDisplay = diffDays > 0 ? diffDays : 0;
+    }
+  }
+
+  if (expiresAtIso) {
+    const expiryDate = new Date(expiresAtIso);
+    if (!isNaN(expiryDate.getTime())) {
+      expiryDisplay = expiryDate.toISOString().slice(0, 10); // YYYY-MM-DD
     }
   }
 

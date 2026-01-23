@@ -691,7 +691,7 @@ const App: React.FC = () => {
     setShowRealtimeConfirm(false);
   };
 
-  // Poll dashboard home endpoint every 15 minutes when token is present
+  // Poll dashboard home endpoint every 30 minutes when token is present
   useEffect(() => {
     if (!token) return;
 
@@ -717,8 +717,8 @@ const App: React.FC = () => {
     // Run once immediately
     loadDashboard();
 
-    // Then every 15 minutes
-    const intervalId = setInterval(loadDashboard, 15 * 60 * 1000);
+    // Then every 30 minutes
+    const intervalId = setInterval(loadDashboard, 30 * 60 * 1000);
 
     return () => {
       cancelled = true;

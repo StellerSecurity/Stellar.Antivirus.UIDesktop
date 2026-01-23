@@ -3,12 +3,13 @@
 import { http } from "./http";
 
 export type DashboardUser = {
-    username: string;
+    email: string;
 };
 
 export type DashboardSubscription = {
-    expires_at: string | null;
-    active: boolean;
+    expires_at: string;
+    remaining_days?: number;
+    status: number; // 0 = INACTIVE, 1 = ACTIVE, 2 = TRIAL
 };
 
 export type DashboardResponse = {
@@ -18,12 +19,18 @@ export type DashboardResponse = {
 
 /**
  * Fetch dashboard information (user + subscription) from the UI API.
- * Expects a personal token in the request body.
+ * Sends token as Bearer token in Authorization header.
  */
 export function fetchDashboard(token: string) {
+    // Pass token via http.post's auth parameter, which will add it as Bearer token
+    // We need to temporarily set the token in localStorage so http.ts can read it
+    if (typeof window !== "undefined") {
+        window.localStorage.setItem("stellar_auth_token", token);
+    }
+    
     return http.post<DashboardResponse>(
         "/api/v1/dashboardcontroller/home",
-        { token },
-        false // token is passed in request body, not via Authorization header
+        {}, // Empty body as per API requirements
+        true // Use auth: true to send Bearer token
     );
 }

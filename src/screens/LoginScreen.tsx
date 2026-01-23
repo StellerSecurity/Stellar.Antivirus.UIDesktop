@@ -28,6 +28,11 @@ const LoginScreen: React.FC<LoginScreenProps> = ({
       // login() is typed in auth.ts to return ApiEnvelope
       const res = await login({ username, password });
 
+      // Check response_code === 200 before storing
+      if (res.response_code !== 200) {
+        throw new Error(res.response_message || "Login failed");
+      }
+
       if (!res.token) {
         throw new Error("No token returned from server");
       }
@@ -144,7 +149,10 @@ const LoginScreen: React.FC<LoginScreenProps> = ({
 
       {/* CREATE STELLAR ID Button - Absolute bottom right */}
       <div className="absolute bottom-8 right-8">
-        <Button type="button" onClick={onGoToRegister}>
+        <Button type="button" onClick={() => {
+          setError(null);
+          onGoToRegister?.();
+        }}>
           CREATE STELLAR ID
         </Button>
       </div>
