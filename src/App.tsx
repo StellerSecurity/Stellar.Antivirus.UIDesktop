@@ -93,7 +93,7 @@ const getInitialDashboard = (): DashboardResponse | null => {
   return null;
 };
 
-// ✅ Keep auto-login logic intact
+// Keep auto-login logic intact
 const getInitialView = (): View => {
   if (typeof window === "undefined") return "onboarding_step1";
 
@@ -172,7 +172,7 @@ const App: React.FC = () => {
     file: "",
   });
 
-  // Which scan button started the current show (UI-only, for labeling + logs)
+  // Which scan started the current run (UI-only labeling)
   const activeScanRef = useRef<"full" | "quick" | null>(null);
 
   const scanIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -250,20 +250,26 @@ const App: React.FC = () => {
     })();
   }, []);
 
+  // Show a visible "100%" completion moment, then clear progress to idle.
   const holdCompletionMomentThenClear = () => {
-    // Force a visible 100% for a short “Scan complete” moment.
     const last = lastProgressRef.current;
+
     if (last.total > 0) {
       setScanProgress({ current: last.total, total: last.total, file: "" });
     } else {
-      // Fallback so UI can still show "complete" even if backend never sent totals.
+      // Fallback so UI can still display "complete" even if backend never sent totals.
       setScanProgress({ current: 1, total: 1, file: "" });
     }
 
-    window.setTimeout(() => {
+    if (typeof window !== "undefined") {
+      window.setTimeout(() => {
+        setScanProgress({ current: 0, total: 0, file: "" });
+        lastProgressRef.current = { current: 0, total: 0, file: "" };
+      }, 1200);
+    } else {
       setScanProgress({ current: 0, total: 0, file: "" });
       lastProgressRef.current = { current: 0, total: 0, file: "" };
-    }, 1200);
+    }
   };
 
   // Listen for scan_progress + scan_finished events from Rust backend
@@ -321,7 +327,7 @@ const App: React.FC = () => {
         setShowThreatsModal(true);
 
         showNotification(
-            `Stellar Antivirus – threats found`,
+            "Stellar Antivirus – threats found",
             `${mapped.length} threat${mapped.length === 1 ? "" : "s"} detected during ${scanLabel.toLowerCase()}.`
         );
 
@@ -340,7 +346,7 @@ const App: React.FC = () => {
         setStatus(realtimeEnabled ? "protected" : "not_protected");
 
         showNotification(
-            `Stellar Antivirus – scan completed`,
+            "Stellar Antivirus – scan completed",
             `${scanLabel} finished. No threats found.`
         );
 
@@ -355,7 +361,7 @@ const App: React.FC = () => {
         );
       }
 
-      // End the scan “mode”
+      // End current scan label
       activeScanRef.current = null;
 
       // Make completion visible, then clear to idle.
@@ -432,7 +438,7 @@ const App: React.FC = () => {
   }, []);
 
   const startFullScan = async () => {
-    // stop any demo scan interval first
+    // Stop any demo interval first
     if (scanIntervalRef.current) {
       clearInterval(scanIntervalRef.current);
       scanIntervalRef.current = null;
@@ -453,6 +459,7 @@ const App: React.FC = () => {
           scanIntervalRef.current = null;
           setStatus(realtimeEnabled ? "protected" : "not_protected");
           setScanProgress({ current: 1, total: 1, file: "" });
+
           window.setTimeout(() => {
             setScanProgress({ current: 0, total: 0, file: "" });
           }, 1200);
@@ -487,8 +494,8 @@ const App: React.FC = () => {
     }
   };
 
-  // If/when you add a real Rust `quick_scan`, swap invoke("fake_full_scan") -> invoke("quick_scan")
   const startQuickScan = async () => {
+    // Stop any demo interval first
     if (scanIntervalRef.current) {
       clearInterval(scanIntervalRef.current);
       scanIntervalRef.current = null;
@@ -509,7 +516,10 @@ const App: React.FC = () => {
           scanIntervalRef.current = null;
           setStatus(realtimeEnabled ? "protected" : "not_protected");
           setScanProgress({ current: 1, total: 1, file: "" });
-          window.setTimeout(() => setScanProgress({ current: 0, total: 0, file: "" }), 1200);
+
+          window.setTimeout(() => {
+            setScanProgress({ current: 0, total: 0, file: "" });
+          }, 1200);
         } else {
           setScanProgress({ current, total: 40, file: "" });
         }
@@ -523,8 +533,8 @@ const App: React.FC = () => {
       setStatus("scanning");
       setScanProgress({ current: 0, total: 0, file: "" });
 
-      // Quick scan: skip big files (25 MB), but still scan risky extensions.
-      await invoke("quick_scan", { maxBytes: 25 * 1024 * 1024 });
+      // Rust quick_scan takes no args in your lib.rs (keep it consistent).
+      await invoke("quick_scan");
     } catch (err) {
       console.error("Quick scan error:", err);
       activeScanRef.current = null;
@@ -539,7 +549,7 @@ const App: React.FC = () => {
       scanIntervalRef.current = null;
     }
 
-    // UI stops immediately (backend may still scan; if you want true cancel you need a Rust cancel flag)
+    // UI stop only. True cancel requires a Rust cancel flag.
     activeScanRef.current = null;
     setStatus(realtimeEnabled ? "protected" : "not_protected");
     setScanProgress({ current: 0, total: 0, file: "" });
@@ -744,10 +754,7 @@ const App: React.FC = () => {
         setDashboard(res);
 
         if (typeof window !== "undefined") {
-          window.localStorage.setItem(
-              STORAGE_KEYS.dashboard,
-              JSON.stringify(res)
-          );
+          window.localStorage.setItem(STORAGE_KEYS.dashboard, JSON.stringify(res));
         }
       } catch (err) {
         console.error("Failed to fetch dashboard", err);
@@ -989,7 +996,9 @@ const App: React.FC = () => {
                       if (!entry) return null;
 
                       const protectionLevel =
-                          entry.source === "full_scan" ? "Full scan" : "Real-time protection";
+                          entry.source === "full_scan"
+                              ? "Full scan"
+                              : "Real-time protection";
 
                       return (
                           <div className="bg-white rounded-[20px] p-4 mb-6 mt-4">
@@ -1006,7 +1015,9 @@ const App: React.FC = () => {
                                 <p className="text-[#62626A] text-xs whitespace-nowrap">
                                   {entry.quarantinedAt}
                                 </p>
-                                <p className="text-[#62626A] text-xs">{protectionLevel}</p>
+                                <p className="text-[#62626A] text-xs">
+                                  {protectionLevel}
+                                </p>
                               </div>
                             </div>
                           </div>
@@ -1034,7 +1045,9 @@ const App: React.FC = () => {
                                 console.error("Failed to delete quarantine file", err);
                               }
                             }
-                            setQuarantine((prev) => prev.filter((q) => q.id !== pendingDeleteId));
+                            setQuarantine((prev) =>
+                                prev.filter((q) => q.id !== pendingDeleteId)
+                            );
                           }
                           setShowDeleteModal(false);
                         }}

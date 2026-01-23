@@ -12,7 +12,7 @@ use std::{
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use reqwest::blocking::Client;
-use serde::{Deserialize, Serialize};
+use serde::{de::Deserializer, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_autostart::MacosLauncher;
@@ -36,7 +36,7 @@ const HTTP_RETRIES: usize = 1;
 
 // ---- Scan tuning ----
 const QUICK_MAX_FILE_BYTES: u64 = 25 * 1024 * 1024; // 25 MB
-const FULL_MAX_FILE_BYTES: u64 = 200 * 1024 * 1024; // 200 MB (still keeps you sane)
+const FULL_MAX_FILE_BYTES: u64 = 200 * 1024 * 1024; // 200 MB
 
 // ---- Payloads to frontend ----
 
@@ -89,19 +89,40 @@ struct ThreatApiRequest {
     files: Vec<ThreatApiFile>,
 }
 
+// Robust deserializer: accept string/number/bool/null into Option<String>
+fn de_opt_string_any<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let v = serde_json::Value::deserialize(deserializer)?;
+    Ok(match v {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(s) => Some(s),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        other => Some(other.to_string()),
+    })
+}
+
 #[derive(Deserialize, Clone)]
 struct ThreatApiSignature {
-    id: String,
-    name: String,
-    family: String,
-    category: String,
-    severity: String,
+    // Laravel might send numeric IDs. DB might be null. Humans are creative.
+    #[serde(default, deserialize_with = "de_opt_string_any")]
+    id: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    family: Option<String>,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    severity: Option<String>,
 }
 
 #[derive(Deserialize, Clone)]
 struct ThreatApiResult {
     sha256: String,
-    verdict: String, // e.g. "clean", "malware", "pup", ...
+    verdict: String, // e.g. "clean", "malware", "pua", "unknown"
     signature: Option<ThreatApiSignature>,
     recommended_action: Option<String>,
 }
@@ -156,6 +177,7 @@ fn build_http_client() -> Result<Client, String> {
     Client::builder()
         .connect_timeout(Duration::from_secs(HTTP_CONNECT_TIMEOUT_SECS))
         .timeout(Duration::from_secs(HTTP_TOTAL_TIMEOUT_SECS))
+        .user_agent("StellarAntivirus/1.0.0")
         .build()
         .map_err(|e| format!("Failed to build HTTP client: {e}"))
 }
@@ -180,7 +202,9 @@ fn call_threat_api_batch(files: Vec<ThreatApiFile>) -> Result<Vec<ThreatApiResul
     let mut all_results: Vec<ThreatApiResult> = Vec::new();
     const CHUNK_SIZE: usize = 1000;
 
-    for chunk in files.chunks(CHUNK_SIZE) {
+    println!("[HTTP] POST {} ({} files total)", url, files.len());
+
+    for (chunk_idx, chunk) in files.chunks(CHUNK_SIZE).enumerate() {
         let req = ThreatApiRequest {
             client: build_client_payload(),
             files: chunk.to_vec(),
@@ -189,25 +213,74 @@ fn call_threat_api_batch(files: Vec<ThreatApiFile>) -> Result<Vec<ThreatApiResul
         let mut last_err: Option<String> = None;
 
         for attempt in 0..=HTTP_RETRIES {
-            let resp = client.post(&url).json(&req).send();
+            println!(
+                "[HTTP] chunk {}/{} attempt {}/{} ({} items)",
+                chunk_idx + 1,
+                (files.len() + CHUNK_SIZE - 1) / CHUNK_SIZE,
+                attempt + 1,
+                HTTP_RETRIES + 1,
+                chunk.len()
+            );
+
+            let t0 = std::time::Instant::now();
+
+            let resp = client
+                .post(&url)
+                .header(reqwest::header::ACCEPT, "application/json")
+                .json(&req)
+                .send();
 
             match resp {
                 Ok(r) => {
-                    if !r.status().is_success() {
-                        let msg = format!("API returned HTTP {}", r.status());
+                    let status = r.status();
+                    let elapsed = t0.elapsed();
+
+                    println!(
+                        "[HTTP] status={} in {:?} (chunk {})",
+                        status,
+                        elapsed,
+                        chunk_idx + 1
+                    );
+
+                    if !status.is_success() {
+                        // Try to read body to help debugging even when status != 2xx
+                        let body = r.text().unwrap_or_else(|_| "<failed to read body>".to_string());
+                        let msg = format!("API returned HTTP {} body_snippet={}", status, body);
                         last_err = Some(msg.clone());
 
                         // Retry on transient server errors.
-                        if attempt < HTTP_RETRIES && r.status().is_server_error() {
+                        if attempt < HTTP_RETRIES && status.is_server_error() {
                             thread::sleep(Duration::from_millis(400));
                             continue;
                         }
                         return Err(msg);
                     }
 
-                    let parsed: ThreatApiResponse = r
-                        .json()
-                        .map_err(|e| format!("Failed to parse API JSON: {e}"))?;
+                    // Read bytes and parse manually so we can log snippet on parse error.
+                    let headers = r.headers().clone();
+                    let body_bytes = r
+                        .bytes()
+                        .map_err(|e| format!("Failed to read API response body: {e}"))?;
+
+                    let ct = headers
+                        .get(reqwest::header::CONTENT_TYPE)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("<missing>");
+
+                    println!(
+                        "[HTTP] response content-type={} bytes={}",
+                        ct,
+                        body_bytes.len()
+                    );
+
+                    let parsed: ThreatApiResponse = serde_json::from_slice(&body_bytes).map_err(|e| {
+                        let snippet_len = body_bytes.len().min(800);
+                        let snippet = String::from_utf8_lossy(&body_bytes[..snippet_len]);
+                        format!(
+                            "Failed to parse API JSON: {e} | content-type={} | body_snippet={}",
+                            ct, snippet
+                        )
+                    })?;
 
                     all_results.extend(parsed.results);
                     last_err = None;
@@ -258,7 +331,13 @@ fn run_hash_lookup_scan(
         return Ok(());
     }
 
+    println!(
+        "[SCAN] {} starting. paths_to_scan={}",
+        notification_label, total
+    );
+
     // Hash files + emit progress
+    let t0 = std::time::Instant::now();
     let mut index_to_path: Vec<(usize, PathBuf, String)> = Vec::with_capacity(total);
 
     for (i, path) in paths_to_scan.iter().enumerate() {
@@ -283,6 +362,15 @@ fn run_hash_lookup_scan(
         }
     }
 
+    let hashing_elapsed = t0.elapsed();
+    println!(
+        "[SCAN] {} hashing done in {:?}. hashed_ok={}/{}",
+        notification_label,
+        hashing_elapsed,
+        index_to_path.len(),
+        total
+    );
+
     // Build API payload
     let mut files_for_api: Vec<ThreatApiFile> = Vec::new();
     for (_idx, path, hash) in &index_to_path {
@@ -303,7 +391,7 @@ fn run_hash_lookup_scan(
     let api_results = match call_threat_api_batch(files_for_api) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("{notification_label} API error: {e}");
+            eprintln!("[SCAN] {} API error: {}", notification_label, e);
 
             // Never leave the UI stuck in scanning state.
             let _ = app.emit("scan_finished", ScanFinishedPayload { threats: vec![] });
@@ -339,7 +427,7 @@ fn run_hash_lookup_scan(
             let name = r
                 .signature
                 .as_ref()
-                .map(|s| s.name.clone())
+                .and_then(|s| s.name.clone())
                 .unwrap_or_else(|| "Unknown threat".to_string());
 
             threats_vec.push((name, path_str.clone()));
@@ -383,22 +471,29 @@ fn collect_paths(
     include_documents: bool,
     include_desktop: bool,
     max_file_bytes: Option<u64>,
-) -> Vec<PathBuf> {
-    let mut paths_to_scan: Vec<PathBuf> = Vec::new();
-
-    let mut push_if_ok = |p: PathBuf| {
+) -> (Vec<PathBuf>, usize) {
+    fn push_if_ok(
+        paths: &mut Vec<PathBuf>,
+        skipped_too_big: &mut usize,
+        max_file_bytes: Option<u64>,
+        p: PathBuf,
+    ) {
         if let Some(limit) = max_file_bytes {
             match fs::metadata(&p) {
                 Ok(m) => {
                     if m.len() > limit {
+                        *skipped_too_big += 1;
                         return;
                     }
                 }
                 Err(_) => return,
             }
         }
-        paths_to_scan.push(p);
-    };
+        paths.push(p);
+    }
+
+    let mut paths_to_scan: Vec<PathBuf> = Vec::new();
+    let mut skipped_too_big: usize = 0;
 
     if let Some(downloads) = dirs::download_dir() {
         for entry in WalkDir::new(downloads)
@@ -406,43 +501,68 @@ fn collect_paths(
             .into_iter()
             .flatten()
         {
+            if paths_to_scan.len() >= max_files {
+                break;
+            }
             if entry.file_type().is_file() {
-                push_if_ok(entry.into_path());
+                push_if_ok(
+                    &mut paths_to_scan,
+                    &mut skipped_too_big,
+                    max_file_bytes,
+                    entry.into_path(),
+                );
             }
         }
     }
 
-    if include_documents {
+    if include_documents && paths_to_scan.len() < max_files {
         if let Some(documents) = dirs::document_dir() {
             for entry in WalkDir::new(documents)
                 .max_depth(max_depth)
                 .into_iter()
                 .flatten()
             {
+                if paths_to_scan.len() >= max_files {
+                    break;
+                }
                 if entry.file_type().is_file() {
-                    push_if_ok(entry.into_path());
+                    push_if_ok(
+                        &mut paths_to_scan,
+                        &mut skipped_too_big,
+                        max_file_bytes,
+                        entry.into_path(),
+                    );
                 }
             }
         }
     }
 
-    if include_desktop {
+    if include_desktop && paths_to_scan.len() < max_files {
         if let Some(desktop) = dirs::desktop_dir() {
             for entry in WalkDir::new(desktop)
                 .max_depth(max_depth)
                 .into_iter()
                 .flatten()
             {
+                if paths_to_scan.len() >= max_files {
+                    break;
+                }
                 if entry.file_type().is_file() {
-                    push_if_ok(entry.into_path());
+                    push_if_ok(
+                        &mut paths_to_scan,
+                        &mut skipped_too_big,
+                        max_file_bytes,
+                        entry.into_path(),
+                    );
                 }
             }
         }
     }
 
     paths_to_scan.truncate(max_files);
-    paths_to_scan
+    (paths_to_scan, skipped_too_big)
 }
+
 
 // ---- Commands ----
 
@@ -453,7 +573,18 @@ async fn fake_full_scan(app: AppHandle) -> Result<(), String> {
 
     let app2 = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let paths_to_scan = collect_paths(MAX_DEPTH, MAX_FILES, true, true, Some(FULL_MAX_FILE_BYTES));
+        let (paths_to_scan, skipped) =
+            collect_paths(MAX_DEPTH, MAX_FILES, true, true, Some(FULL_MAX_FILE_BYTES));
+
+        println!(
+            "[SCAN] collect_paths depth={} max_files={} include_docs=true include_desktop=true limit_bytes={:?} -> kept={} skipped_too_big={}",
+            MAX_DEPTH,
+            MAX_FILES,
+            Some(FULL_MAX_FILE_BYTES),
+            paths_to_scan.len(),
+            skipped
+        );
+
         run_hash_lookup_scan(app2, paths_to_scan, "Full scan")
     })
     .await
@@ -467,8 +598,18 @@ async fn quick_scan(app: AppHandle) -> Result<(), String> {
 
     let app2 = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        // Quick scan: smaller scope + skip large files
-        let paths_to_scan = collect_paths(MAX_DEPTH, MAX_FILES, false, true, Some(QUICK_MAX_FILE_BYTES));
+        let (paths_to_scan, skipped) =
+            collect_paths(MAX_DEPTH, MAX_FILES, false, true, Some(QUICK_MAX_FILE_BYTES));
+
+        println!(
+            "[SCAN] collect_paths depth={} max_files={} include_docs=false include_desktop=true limit_bytes={:?} -> kept={} skipped_too_big={}",
+            MAX_DEPTH,
+            MAX_FILES,
+            Some(QUICK_MAX_FILE_BYTES),
+            paths_to_scan.len(),
+            skipped
+        );
+
         run_hash_lookup_scan(app2, paths_to_scan, "Quick scan")
     })
     .await
@@ -708,8 +849,10 @@ fn start_realtime_watcher(app_handle: AppHandle) {
                 continue;
             }
 
+            // Let editors finish writing
             thread::sleep(Duration::from_millis(20));
 
+            // Suppress duplicates for the same file within a short window
             let now = Instant::now();
             if let Some(last) = recent_hits.get(&file) {
                 if now.duration_since(*last) < suppress_window {
@@ -737,7 +880,7 @@ fn start_realtime_watcher(app_handle: AppHandle) {
                             let name = result
                                 .signature
                                 .as_ref()
-                                .map(|s| s.name.clone())
+                                .and_then(|s| s.name.clone())
                                 .unwrap_or_else(|| "Unknown threat".to_string());
 
                             detected_name = Some(name);
