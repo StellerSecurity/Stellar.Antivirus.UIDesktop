@@ -11,13 +11,13 @@ use std::{
 };
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_notification::NotificationExt;
 use walkdir::WalkDir;
-use reqwest::blocking::Client;
 
 // ---- Global state ----
 
@@ -28,7 +28,17 @@ static REALTIME_ENABLED: AtomicBool = AtomicBool::new(true);
 const API_BASE_URL: &str = "https://stellarantivirusthreatapiprod.azurewebsites.net";
 const API_HASH_CHECK_PATH: &str = "/api/av/v1/hash/check";
 
-// ---- Payloads til frontend ----
+// ---- HTTP hardening ----
+// If the API stalls, we must not hang forever.
+const HTTP_CONNECT_TIMEOUT_SECS: u64 = 10;
+const HTTP_TOTAL_TIMEOUT_SECS: u64 = 45;
+const HTTP_RETRIES: usize = 1;
+
+// ---- Scan tuning ----
+const QUICK_MAX_FILE_BYTES: u64 = 25 * 1024 * 1024; // 25 MB
+const FULL_MAX_FILE_BYTES: u64 = 200 * 1024 * 1024; // 200 MB (still keeps you sane)
+
+// ---- Payloads to frontend ----
 
 #[derive(Serialize, Clone)]
 struct ScanProgressPayload {
@@ -50,7 +60,9 @@ struct RealtimeFilePayload {
 
 #[derive(Deserialize)]
 struct RestoreItem {
+    #[serde(rename = "fileName", alias = "file_name")]
     file_name: String,
+    #[serde(rename = "originalPath", alias = "original_path")]
     original_path: String,
 }
 
@@ -71,7 +83,6 @@ struct ThreatApiFile {
     extension: Option<String>,
 }
 
-
 #[derive(Serialize)]
 struct ThreatApiRequest {
     client: ThreatApiClient,
@@ -90,7 +101,7 @@ struct ThreatApiSignature {
 #[derive(Deserialize, Clone)]
 struct ThreatApiResult {
     sha256: String,
-    verdict: String, // fx "clean", "malware", "pup", ...
+    verdict: String, // e.g. "clean", "malware", "pup", ...
     signature: Option<ThreatApiSignature>,
     recommended_action: Option<String>,
 }
@@ -112,7 +123,7 @@ fn quarantine_root() -> PathBuf {
     base_dir.join("StellarAntivirus").join("Quarantine")
 }
 
-// Simpel test-filregel (navn)
+// Simple test-file rule (filename)
 fn is_test_filename(path: &Path) -> bool {
     if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
         let lower = name.to_lowercase();
@@ -136,11 +147,18 @@ fn sha256_of_file(path: &Path) -> Option<String> {
         hasher.update(&buf[..n]);
     }
 
-    let hash = hasher.finalize();
-    Some(hex::encode(hash))
+    Some(hex::encode(hasher.finalize()))
 }
 
-// ---- API helpers ----
+// ---- HTTP / API helpers ----
+
+fn build_http_client() -> Result<Client, String> {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(HTTP_CONNECT_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(HTTP_TOTAL_TIMEOUT_SECS))
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {e}"))
+}
 
 fn build_client_payload() -> ThreatApiClient {
     ThreatApiClient {
@@ -152,55 +170,69 @@ fn build_client_payload() -> ThreatApiClient {
 }
 
 fn call_threat_api_batch(files: Vec<ThreatApiFile>) -> Result<Vec<ThreatApiResult>, String> {
-    // If there are no files, there is nothing to look up
     if files.is_empty() {
         return Ok(vec![]);
     }
 
-    // Base URL for the Threat API
     let url = format!("{}{}", API_BASE_URL, API_HASH_CHECK_PATH);
+    let client = build_http_client()?;
 
-    // Reuse the same HTTP client for all chunks
-    let client = Client::new();
-
-    // Collect all results from all chunks here
     let mut all_results: Vec<ThreatApiResult> = Vec::new();
-
-    // How many files to send per API call.
-    // 500–1000 is usually a good balance between performance and payload size.
     const CHUNK_SIZE: usize = 1000;
 
-    // Iterate over the files in fixed-size chunks
     for chunk in files.chunks(CHUNK_SIZE) {
-        // Build request payload for this chunk
         let req = ThreatApiRequest {
             client: build_client_payload(),
-            files: chunk.to_vec(), // now valid because ThreatApiFile: Clone
+            files: chunk.to_vec(),
         };
 
-        // Perform the HTTP request
-        let resp = client
-            .post(&url)
-            .json(&req)
-            .send()
-            .map_err(|e| format!("API request error: {e}"))?;
+        let mut last_err: Option<String> = None;
 
-        if !resp.status().is_success() {
-            return Err(format!("API returned HTTP {}", resp.status()));
+        for attempt in 0..=HTTP_RETRIES {
+            let resp = client.post(&url).json(&req).send();
+
+            match resp {
+                Ok(r) => {
+                    if !r.status().is_success() {
+                        let msg = format!("API returned HTTP {}", r.status());
+                        last_err = Some(msg.clone());
+
+                        // Retry on transient server errors.
+                        if attempt < HTTP_RETRIES && r.status().is_server_error() {
+                            thread::sleep(Duration::from_millis(400));
+                            continue;
+                        }
+                        return Err(msg);
+                    }
+
+                    let parsed: ThreatApiResponse = r
+                        .json()
+                        .map_err(|e| format!("Failed to parse API JSON: {e}"))?;
+
+                    all_results.extend(parsed.results);
+                    last_err = None;
+                    break;
+                }
+                Err(e) => {
+                    let msg = format!("API request error: {e}");
+                    last_err = Some(msg.clone());
+
+                    // Retry once on network/timeouts.
+                    if attempt < HTTP_RETRIES {
+                        thread::sleep(Duration::from_millis(400));
+                        continue;
+                    }
+                }
+            }
         }
 
-        // Parse JSON response from this chunk
-        let parsed: ThreatApiResponse = resp
-            .json()
-            .map_err(|e| format!("Failed to parse API JSON: {e}"))?;
-
-        // Append results from this chunk to the global list
-        all_results.extend(parsed.results);
+        if let Some(e) = last_err {
+            return Err(e);
+        }
     }
 
     Ok(all_results)
 }
-
 
 fn call_threat_api_single(hash: &str) -> Result<Option<ThreatApiResult>, String> {
     let file = ThreatApiFile {
@@ -213,181 +245,235 @@ fn call_threat_api_single(hash: &str) -> Result<Option<ThreatApiResult>, String>
     Ok(results.into_iter().next())
 }
 
+// ---- Shared scan routine ----
+
+fn run_hash_lookup_scan(
+    app: AppHandle,
+    paths_to_scan: Vec<PathBuf>,
+    notification_label: &str,
+) -> Result<(), String> {
+    let total = paths_to_scan.len();
+    if total == 0 {
+        let _ = app.emit("scan_finished", ScanFinishedPayload { threats: vec![] });
+        return Ok(());
+    }
+
+    // Hash files + emit progress
+    let mut index_to_path: Vec<(usize, PathBuf, String)> = Vec::with_capacity(total);
+
+    for (i, path) in paths_to_scan.iter().enumerate() {
+        let file_str = path.to_string_lossy().to_string();
+
+        let _ = app.emit(
+            "scan_progress",
+            ScanProgressPayload {
+                file: file_str.clone(),
+                current: i + 1,
+                total,
+            },
+        );
+
+        if let Some(hash) = sha256_of_file(path) {
+            index_to_path.push((i, path.clone(), hash));
+        }
+
+        // Let UI breathe on fast disks
+        if i % 100 == 0 {
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    // Build API payload
+    let mut files_for_api: Vec<ThreatApiFile> = Vec::new();
+    for (_idx, path, hash) in &index_to_path {
+        let ext = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_lowercase());
+        let size = fs::metadata(path).ok().map(|m| m.len());
+
+        files_for_api.push(ThreatApiFile {
+            sha256: hash.clone(),
+            size,
+            extension: ext,
+        });
+    }
+
+    // Call API (chunked + timeout + retry)
+    let api_results = match call_threat_api_batch(files_for_api) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("{notification_label} API error: {e}");
+
+            // Never leave the UI stuck in scanning state.
+            let _ = app.emit("scan_finished", ScanFinishedPayload { threats: vec![] });
+
+            let _ = app
+                .notification()
+                .builder()
+                .title("Stellar Antivirus")
+                .body(format!("{notification_label} failed – could not verify results."))
+                .show();
+
+            return Err(e);
+        }
+    };
+
+    // Map sha256 -> file path
+    use std::collections::HashMap;
+    let mut hash_to_path: HashMap<String, String> = HashMap::new();
+    for (_idx, path, hash) in &index_to_path {
+        hash_to_path.insert(hash.to_lowercase(), path.to_string_lossy().to_string());
+    }
+
+    // Build threats list
+    let mut threats_vec: Vec<(String, String)> = Vec::new();
+
+    for r in api_results {
+        let verdict = r.verdict.to_lowercase();
+        if verdict == "clean" || verdict == "unknown" {
+            continue;
+        }
+
+        if let Some(path_str) = hash_to_path.get(&r.sha256.to_lowercase()) {
+            let name = r
+                .signature
+                .as_ref()
+                .map(|s| s.name.clone())
+                .unwrap_or_else(|| "Unknown threat".to_string());
+
+            threats_vec.push((name, path_str.clone()));
+        }
+    }
+
+    // Emit finished event
+    let _ = app.emit(
+        "scan_finished",
+        ScanFinishedPayload {
+            threats: threats_vec.clone(),
+        },
+    );
+
+    // System notification
+    if !threats_vec.is_empty() {
+        let _ = app
+            .notification()
+            .builder()
+            .title("Stellar Antivirus")
+            .body(format!(
+                "{notification_label} completed – {} threat(s) found.",
+                threats_vec.len()
+            ))
+            .show();
+    } else {
+        let _ = app
+            .notification()
+            .builder()
+            .title("Stellar Antivirus")
+            .body(format!("{notification_label} completed – no threats found."))
+            .show();
+    }
+
+    Ok(())
+}
+
+fn collect_paths(
+    max_depth: usize,
+    max_files: usize,
+    include_documents: bool,
+    include_desktop: bool,
+    max_file_bytes: Option<u64>,
+) -> Vec<PathBuf> {
+    let mut paths_to_scan: Vec<PathBuf> = Vec::new();
+
+    let mut push_if_ok = |p: PathBuf| {
+        if let Some(limit) = max_file_bytes {
+            match fs::metadata(&p) {
+                Ok(m) => {
+                    if m.len() > limit {
+                        return;
+                    }
+                }
+                Err(_) => return,
+            }
+        }
+        paths_to_scan.push(p);
+    };
+
+    if let Some(downloads) = dirs::download_dir() {
+        for entry in WalkDir::new(downloads)
+            .max_depth(max_depth)
+            .into_iter()
+            .flatten()
+        {
+            if entry.file_type().is_file() {
+                push_if_ok(entry.into_path());
+            }
+        }
+    }
+
+    if include_documents {
+        if let Some(documents) = dirs::document_dir() {
+            for entry in WalkDir::new(documents)
+                .max_depth(max_depth)
+                .into_iter()
+                .flatten()
+            {
+                if entry.file_type().is_file() {
+                    push_if_ok(entry.into_path());
+                }
+            }
+        }
+    }
+
+    if include_desktop {
+        if let Some(desktop) = dirs::desktop_dir() {
+            for entry in WalkDir::new(desktop)
+                .max_depth(max_depth)
+                .into_iter()
+                .flatten()
+            {
+                if entry.file_type().is_file() {
+                    push_if_ok(entry.into_path());
+                }
+            }
+        }
+    }
+
+    paths_to_scan.truncate(max_files);
+    paths_to_scan
+}
+
 // ---- Commands ----
 
-/// Full scan – scanner en masse filer og slår dem op mod API
 #[tauri::command]
 async fn fake_full_scan(app: AppHandle) -> Result<(), String> {
-          // 1) Build a list of files to scan (Downloads, Documents, Desktop – limited recursion)
-          let mut paths_to_scan: Vec<PathBuf> = Vec::new();
+    const MAX_DEPTH: usize = 3;
+    const MAX_FILES: usize = 500;
 
-          if let Some(downloads) = dirs::download_dir() {
-              for entry in WalkDir::new(downloads)
-                  .max_depth(3)
-                  .into_iter()
-                  .flatten()
-              {
-                  if entry.file_type().is_file() {
-                      paths_to_scan.push(entry.into_path());
-                  }
-              }
-          }
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths_to_scan = collect_paths(MAX_DEPTH, MAX_FILES, true, true, Some(FULL_MAX_FILE_BYTES));
+        run_hash_lookup_scan(app2, paths_to_scan, "Full scan")
+    })
+    .await
+    .map_err(|e| format!("Full scan task failed: {e}"))?
+}
 
-          if let Some(documents) = dirs::document_dir() {
-              for entry in WalkDir::new(documents)
-                  .max_depth(3)
-                  .into_iter()
-                  .flatten()
-              {
-                  if entry.file_type().is_file() {
-                      paths_to_scan.push(entry.into_path());
-                  }
-              }
-          }
+#[tauri::command]
+async fn quick_scan(app: AppHandle) -> Result<(), String> {
+    const MAX_DEPTH: usize = 2;
+    const MAX_FILES: usize = 150;
 
-          if let Some(desktop) = dirs::desktop_dir() {
-              for entry in WalkDir::new(desktop)
-                  .max_depth(3)
-                  .into_iter()
-                  .flatten()
-              {
-                  if entry.file_type().is_file() {
-                      paths_to_scan.push(entry.into_path());
-                  }
-              }
-          }
-
-          // Hard test limit: never scan more than 1 file (for debugging)
-          const MAX_FILES: usize = 1;
-          paths_to_scan.truncate(MAX_FILES);
-
-          let total = paths_to_scan.len();
-          if total == 0 {
-              // No files to scan → immediately tell UI that scan is finished with no threats
-              let _ = app.emit(
-                  "scan_finished",
-                  ScanFinishedPayload { threats: vec![] },
-              );
-              return Ok(());
-          }
-
-          // 2) Hash all files and emit scan_progress events to the UI
-          let mut index_to_path: Vec<(usize, PathBuf, String)> = Vec::with_capacity(total);
-
-          for (i, path) in paths_to_scan.iter().enumerate() {
-              let file_str = path.to_string_lossy().to_string();
-
-              let _ = app.emit(
-                  "scan_progress",
-                  ScanProgressPayload {
-                      file: file_str.clone(),
-                      current: i + 1,
-                      total,
-                  },
-              );
-
-              if let Some(hash) = sha256_of_file(path) {
-                  index_to_path.push((i, path.clone(), hash));
-              }
-
-              // Small pause so the UI has time to update (especially on very fast scans)
-              if i % 100 == 0 {
-                  thread::sleep(Duration::from_millis(5));
-              }
-          }
-
-          // 3) Build batch payload for the Threat API
-          let mut files_for_api: Vec<ThreatApiFile> = Vec::new();
-          for (_idx, path, hash) in &index_to_path {
-              let ext = path
-                  .extension()
-                  .and_then(|s| s.to_str())
-                  .map(|s| s.to_lowercase());
-              let size = fs::metadata(path).ok().map(|m| m.len());
-
-              files_for_api.push(ThreatApiFile {
-                  sha256: hash.clone(),
-                  size,
-                  extension: ext,
-              });
-          }
-
-          // 4) Call the Threat API (this is chunked inside call_threat_api_batch)
-          let api_results = match call_threat_api_batch(files_for_api) {
-              Ok(r) => r,
-              Err(e) => {
-                  eprintln!("Full scan API error: {e}");
-                  // Make sure the UI does not hang if the API fails
-                  let _ = app.emit(
-                      "scan_finished",
-                      ScanFinishedPayload { threats: vec![] },
-                  );
-                  return Err(e);
-              }
-          };
-
-          // Map sha256 -> file path for easy lookup when processing API results
-          use std::collections::HashMap;
-
-          let mut hash_to_path: HashMap<String, String> = HashMap::new();
-          for (_idx, path, hash) in &index_to_path {
-              hash_to_path.insert(
-                  hash.to_lowercase(),
-                  path.to_string_lossy().to_string(),
-              );
-          }
-
-          // Build the final list of (threat_name, file_path) pairs
-          let mut threats_vec: Vec<(String, String)> = Vec::new();
-
-          for r in api_results {
-              let verdict = r.verdict.to_lowercase();
-              if verdict == "clean" || verdict == "unknown" {
-                  continue;
-              }
-
-              if let Some(path_str) = hash_to_path.get(&r.sha256.to_lowercase()) {
-                  let name = r
-                      .signature
-                      .as_ref()
-                      .map(|s| s.name.clone())
-                      .unwrap_or_else(|| "Unknown threat".to_string());
-
-                  threats_vec.push((name, path_str.clone()));
-              }
-          }
-
-          // 5) Notify React that the scan is finished + pass the list of threats
-          let _ = app.emit(
-              "scan_finished",
-              ScanFinishedPayload {
-                  threats: threats_vec.clone(),
-              },
-          );
-
-          // 6) Show a system notification when the scan completes
-          if !threats_vec.is_empty() {
-              let _ = app
-                  .notification()
-                  .builder()
-                  .title("Stellar Antivirus")
-                  .body(format!(
-                      "Full scan completed – {} threat(s) found.",
-                      threats_vec.len()
-                  ))
-                  .show();
-          } else {
-              let _ = app
-                  .notification()
-                  .builder()
-                  .title("Stellar Antivirus")
-                  .body("Full scan completed – no threats found.")
-                  .show();
-          }
-
-          Ok(())
-      }
-
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // Quick scan: smaller scope + skip large files
+        let paths_to_scan = collect_paths(MAX_DEPTH, MAX_FILES, false, true, Some(QUICK_MAX_FILE_BYTES));
+        run_hash_lookup_scan(app2, paths_to_scan, "Quick scan")
+    })
+    .await
+    .map_err(|e| format!("Quick scan task failed: {e}"))?
+}
 
 #[tauri::command]
 fn set_realtime_enabled(enabled: bool) {
@@ -395,7 +481,18 @@ fn set_realtime_enabled(enabled: bool) {
     println!("Realtime protection set to: {enabled}");
 }
 
-// Quarantine: flyt filer til karantænemappe
+fn validate_quarantine_name(name: &str) -> Result<(), String> {
+    use std::path::{Component, Path};
+
+    let p = Path::new(name);
+    let mut comps = p.components();
+
+    match (comps.next(), comps.next()) {
+        (Some(Component::Normal(_)), None) => Ok(()),
+        _ => Err("Invalid quarantine file name".to_string()),
+    }
+}
+
 #[tauri::command]
 async fn quarantine_files(paths: Vec<String>) -> Result<(), String> {
     let qdir = quarantine_root();
@@ -411,7 +508,9 @@ async fn quarantine_files(paths: Vec<String>) -> Result<(), String> {
             continue;
         }
 
-        let fname = src.file_name().unwrap_or_else(|| std::ffi::OsStr::new("unknown"));
+        let fname = src
+            .file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new("unknown"));
         let dest = qdir.join(fname);
 
         if dest.exists() {
@@ -420,7 +519,8 @@ async fn quarantine_files(paths: Vec<String>) -> Result<(), String> {
 
         if let Err(e) = fs::rename(&src, &dest) {
             eprintln!("rename failed: {e}, trying copy+delete");
-            fs::copy(&src, &dest).and_then(|_| fs::remove_file(&src))
+            fs::copy(&src, &dest)
+                .and_then(|_| fs::remove_file(&src))
                 .map_err(|e2| format!("Failed to quarantine file {original}: {e2}"))?;
         }
 
@@ -430,12 +530,13 @@ async fn quarantine_files(paths: Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
-// Restore fra quarantine tilbage til original path
 #[tauri::command]
 async fn restore_from_quarantine(items: Vec<RestoreItem>) -> Result<(), String> {
     let quarantine_root = quarantine_root();
 
     for item in items {
+        validate_quarantine_name(&item.file_name)?;
+
         let src = quarantine_root.join(&item.file_name);
         if !src.exists() {
             eprintln!("quarantine file does not exist for restore: {:?}", src);
@@ -477,12 +578,14 @@ async fn restore_from_quarantine(items: Vec<RestoreItem>) -> Result<(), String> 
     Ok(())
 }
 
-// Slet filer i quarantine baseret på filnavn (bruges af UI's delete-knap)
 #[tauri::command]
-async fn delete_quarantine_files(file_names: Vec<String>) -> Result<(), String> {
+#[allow(non_snake_case)]
+async fn delete_quarantine_files(fileNames: Vec<String>) -> Result<(), String> {
     let quarantine_root = quarantine_root();
 
-    for name in file_names {
+    for name in fileNames {
+        validate_quarantine_name(&name)?;
+
         let path = quarantine_root.join(&name);
         if !path.exists() {
             eprintln!("quarantine file does not exist for delete: {:?}", path);
@@ -500,17 +603,12 @@ async fn delete_quarantine_files(file_names: Vec<String>) -> Result<(), String> 
     Ok(())
 }
 
-// Ældre helper – sletter baseret på original paths (kan stadig bruges fra UI hvis nødvendigt)
 #[tauri::command]
 async fn delete_files(paths: Vec<String>) -> Result<(), String> {
     let qdir = quarantine_root();
 
     for original in paths {
-        let fname = Path::new(&original)
-            .file_name()
-            .unwrap()
-            .to_os_string();
-
+        let fname = Path::new(&original).file_name().unwrap().to_os_string();
         let qpath = qdir.join(fname);
 
         if qpath.exists() {
@@ -537,6 +635,14 @@ fn start_realtime_watcher(app_handle: AppHandle) {
         if let Some(desktop) = dirs::desktop_dir() {
             watch_paths.push(desktop);
         }
+
+        let quarantine_dir = quarantine_root();
+
+        use std::collections::HashMap;
+        use std::time::{Duration as StdDuration, Instant};
+
+        let mut recent_hits: HashMap<String, Instant> = HashMap::new();
+        let suppress_window = StdDuration::from_secs(2);
 
         let (tx, rx) = mpsc::channel::<Event>();
 
@@ -571,6 +677,11 @@ fn start_realtime_watcher(app_handle: AppHandle) {
                 None => continue,
             };
 
+            // Ignore quarantine folder activity (prevents "remove threat" causing re-detect)
+            if path.starts_with(&quarantine_dir) {
+                continue;
+            }
+
             let file = path.to_string_lossy().to_string();
 
             let kind_str = match &event.kind {
@@ -582,37 +693,40 @@ fn start_realtime_watcher(app_handle: AppHandle) {
             }
             .to_string();
 
-            // Emit til UI (du logger ikke længere realtime spam i React, men håller event til debugging)
-            if let Err(e) = app_handle.emit(
+            let _ = app_handle.emit(
                 "realtime_file_event",
                 RealtimeFilePayload {
                     file: file.clone(),
                     event: kind_str.clone(),
                 },
-            ) {
-                eprintln!("failed to emit realtime_file_event: {e}");
-            }
-
-            // Kun create/modify/any er interessante
-            let relevant = matches!(
-                event.kind,
-                EventKind::Create(_) | EventKind::Modify(_) | EventKind::Any
             );
+
+            let relevant =
+                matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_) | EventKind::Any);
 
             if !relevant {
                 continue;
             }
 
-            // Lille pause så editor kan skrive filen færdig
             thread::sleep(Duration::from_millis(20));
+
+            let now = Instant::now();
+            if let Some(last) = recent_hits.get(&file) {
+                if now.duration_since(*last) < suppress_window {
+                    continue;
+                }
+            }
+            recent_hits.insert(file.clone(), now);
+
+            if recent_hits.len() > 256 {
+                let cutoff = Instant::now() - suppress_window;
+                recent_hits.retain(|_, t| *t >= cutoff);
+            }
 
             let mut detected_name: Option<String> = None;
 
-            // 1) Testfilregel (filnavn)
             if is_test_filename(path) {
-                let test_name = "Stellar.Test.FileNameRule".to_string();
-                println!("[Realtime] Test filename rule matched: {}", file);
-                detected_name = Some(test_name);
+                detected_name = Some("Stellar.Test.FileNameRule".to_string());
             } else if let Some(hash) = sha256_of_file(path) {
                 let hash_lower = hash.to_lowercase();
 
@@ -626,23 +740,16 @@ fn start_realtime_watcher(app_handle: AppHandle) {
                                 .map(|s| s.name.clone())
                                 .unwrap_or_else(|| "Unknown threat".to_string());
 
-                            println!(
-                                "[Realtime] API threat detected: {} ({})",
-                                name, file
-                            );
                             detected_name = Some(name);
                         }
                     }
-                    Ok(None) => {
-                        // Intet match, alt godt
-                    }
+                    Ok(None) => {}
                     Err(e) => {
                         eprintln!("[Realtime] API error for {}: {e}", file);
                     }
                 }
             }
 
-            // Hvis vi fandt noget → emit event + native notification
             if let Some(name) = detected_name {
                 let _ = app_handle.emit(
                     "realtime_threat_detected",
@@ -674,6 +781,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             fake_full_scan,
+            quick_scan,
             set_realtime_enabled,
             quarantine_files,
             restore_from_quarantine,
