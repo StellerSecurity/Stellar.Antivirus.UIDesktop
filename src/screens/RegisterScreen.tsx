@@ -28,6 +28,11 @@ const RegisterScreen: React.FC<RegisterScreenProps> = ({
       // register() is typed in auth.ts to return ApiEnvelope
       const res = await register({ username, password });
 
+      // Check response_code === 200 before storing
+      if (res.response_code !== 200) {
+        throw new Error(res.response_message || "Registration failed");
+      }
+
       if (!res.token) {
         throw new Error("No token returned from server");
       }
@@ -111,7 +116,10 @@ const RegisterScreen: React.FC<RegisterScreenProps> = ({
             <span>Already have a Stellar ID?</span>{" "}
             <Button
               type="button"
-              onClick={onGoToLogin}
+              onClick={() => {
+                setError(null);
+                onGoToLogin?.();
+              }}
               variant="secondary"
               className="bg-transparent border-none hover:underline text-[#CFCFFF]"
             >

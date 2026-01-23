@@ -1,6 +1,7 @@
 // src/screens/OnboardingScreen.tsx
 
 import React, { useState } from "react";
+import { login, register } from "../api/auth";
 import Button from "../components/Button";
 import Input from "../components/Input";
 
@@ -159,33 +160,59 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
       return;
     }
 
-    // Simulate API call delay for better UX
-    await new Promise((resolve) => setTimeout(resolve, 500));
-
     try {
-      // For now, bypass API and proceed directly
-      // TODO: Integrate actual API later
-      const mockToken = `mock_token_${Date.now()}`;
-      const mockUser = {
-        id: 1,
-        username: username,
-        email: username,
-      };
+      // Call the actual API based on auth mode
+      const res = authMode === "login" 
+        ? await login({ username, password })
+        : await register({ username, password });
 
-      // Store user locally
+      // Check response_code === 200 before storing
+      if (res.response_code !== 200) {
+        throw new Error(res.response_message || `${authMode === "login" ? "Login" : "Registration"} failed`);
+      }
+
+      if (!res.token) {
+        throw new Error("No token returned from server");
+      }
+
+      // Store user and subscription locally
       if (typeof window !== "undefined") {
-        window.localStorage.setItem("stellar_user", JSON.stringify(mockUser));
+        window.localStorage.setItem("stellar_user", JSON.stringify(res.user));
+        if (res.subscription_id) {
+          window.localStorage.setItem(
+            "stellar_subscription_id",
+            res.subscription_id
+          );
+        }
       }
 
       // Proceed to next step
-      onAuthenticated?.(mockToken);
+      onAuthenticated?.(res.token);
     } catch (err: any) {
-      console.error(err);
-      setError(
-        authMode === "login"
-          ? "Login failed. Please try again."
-          : "Registration failed. Please try again."
-      );
+      console.error("Auth error:", err);
+      
+      // Handle network errors with more details
+      if (err?.isNetworkError || err?.message?.includes("Network error") || err?.message?.includes("Failed to fetch") || err?.message?.includes("Cannot connect")) {
+        const url = err?.url || "the API server";
+        setError(
+          `Unable to connect to ${url}.\n\n` +
+          `Possible issues:\n` +
+          `• Check your internet connection\n` +
+          `• Verify the API server is running\n` +
+          `• Check if the URL is correct\n\n` +
+          `Error: ${err?.message || "Unknown network error"}`
+        );
+      } else if (err?.response?.response_message) {
+        setError(err.response.response_message);
+      } else if (err?.message) {
+        setError(err.message);
+      } else {
+        setError(
+          authMode === "login"
+            ? "Login failed. Please try again."
+            : "Registration failed. Please try again."
+        );
+      }
     } finally {
       setLoading(false);
     }
@@ -257,7 +284,7 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
         />
 
         {error && (
-          <div className="text-[12px] text-red-400 bg-red-900/20 border border-red-800 rounded-xl px-3 py-2">
+          <div className="text-[12px] text-red-400 bg-red-900/20 border border-red-800 rounded-xl px-3 py-2 whitespace-pre-line">
             {error}
           </div>
         )}
@@ -276,7 +303,10 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
             <button
               type="button"
               className="text-[#CFCFFF] text-sm hover:underline"
-              onClick={() => setAuthMode("register")}
+              onClick={() => {
+                setError(null);
+                setAuthMode("register");
+              }}
             >
               CREATE STELLAR ID
             </button>
@@ -284,7 +314,10 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
             <button
               type="button"
               className="text-[#CFCFFF] text-sm hover:underline"
-              onClick={() => setAuthMode("login")}
+              onClick={() => {
+                setError(null);
+                setAuthMode("login");
+              }}
             >
               Already have a Stellar ID? Log in
             </button>

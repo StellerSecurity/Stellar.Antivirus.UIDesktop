@@ -6,10 +6,10 @@ import { http } from "./http";
 export interface ApiUser {
     id: number;
     name: string;
-    email: string;
+    email: string | null; // Can be null from API
     role: number;
-    vpn_sdk: number;
-    crypto_version: string;
+    vpn_sdk?: number; // Optional fields that may not be present
+    crypto_version?: string; // Optional fields that may not be present
 }
 
 // FULL response from backend (this is what you were missing)
