@@ -6,9 +6,8 @@
   "scripts": {
     "dev": "vite --port 3000 --strictPort",
     "build": "tsc -b && vite build",
-    "lint": "eslint .",
-    "preview": "vite preview",
-    "tauri": "tauri dev"
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
   },
   "dependencies": {
     "@tauri-apps/plugin-autostart": "^2.5.1",

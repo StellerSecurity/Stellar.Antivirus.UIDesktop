@@ -18,6 +18,9 @@ use tauri::{AppHandle, Emitter};
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_notification::NotificationExt;
 use walkdir::WalkDir;
+use tauri::Manager;
+use tauri::menu::MenuBuilder;
+use tauri::tray::TrayIconBuilder;
 
 // ---- Global state ----
 
@@ -932,9 +935,51 @@ pub fn run() {
             delete_files,
         ])
         .setup(|app| {
+            // Start realtime watcher immediately (so it’s alive after reboot/login)
             let handle = app.handle().clone();
             start_realtime_watcher(handle);
+
+            // Tray menu (Show / Quit)
+            let menu = MenuBuilder::new(app)
+                .text("show", "Show Stellar Antivirus")
+                .separator()
+                .text("quit", "Quit")
+                .build()
+                .map_err(|e| format!("Failed to build tray menu: {e}"))?;
+
+            let mut tray = TrayIconBuilder::with_id("stellar_antivirus_tray")
+                .menu(&menu)
+                .tooltip("Stellar Antivirus");
+
+            if let Some(icon) = app.default_window_icon().cloned() {
+                tray = tray.icon(icon);
+            }
+
+            tray.on_menu_event(|app, event| {
+                match event.id().as_ref() {
+                    "show" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    }
+                    "quit" => {
+                        app.exit(0);
+                    }
+                    _ => {}
+                }
+            })
+            .build(app)
+            .map_err(|e| format!("Failed to build tray icon: {e}"))?;
+
             Ok(())
+        })
+        // IMPORTANT: don’t let window close kill the process
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let _ = window.hide();
+                api.prevent_close();
+            }
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
