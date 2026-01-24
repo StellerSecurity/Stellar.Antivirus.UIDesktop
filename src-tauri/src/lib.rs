@@ -12,19 +12,24 @@ use std::{
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use reqwest::blocking::Client;
-use serde::{de::Deserializer, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Emitter};
+use tauri::{
+    menu::{MenuBuilder, MenuItemBuilder},
+    tray::TrayIconBuilder,
+    AppHandle, Emitter, Manager, RunEvent, WindowEvent,
+};
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_notification::NotificationExt;
 use walkdir::WalkDir;
-use tauri::Manager;
-use tauri::menu::MenuBuilder;
-use tauri::tray::TrayIconBuilder;
 
 // ---- Global state ----
 
 static REALTIME_ENABLED: AtomicBool = AtomicBool::new(true);
+static ALLOW_EXIT: AtomicBool = AtomicBool::new(false);
+
+// Detect autostart launches (so release builds can boot silently)
+const AUTOSTART_ARG: &str = "--autostart";
 
 // ---- API config ----
 
@@ -32,14 +37,62 @@ const API_BASE_URL: &str = "https://stellarantivirusthreatapiprod.azurewebsites.
 const API_HASH_CHECK_PATH: &str = "/api/av/v1/hash/check";
 
 // ---- HTTP hardening ----
-// If the API stalls, we must not hang forever.
+
 const HTTP_CONNECT_TIMEOUT_SECS: u64 = 10;
 const HTTP_TOTAL_TIMEOUT_SECS: u64 = 45;
 const HTTP_RETRIES: usize = 1;
 
 // ---- Scan tuning ----
+
 const QUICK_MAX_FILE_BYTES: u64 = 25 * 1024 * 1024; // 25 MB
 const FULL_MAX_FILE_BYTES: u64 = 200 * 1024 * 1024; // 200 MB
+
+// ---- Persisted runtime config ----
+
+#[derive(Serialize, Deserialize)]
+struct RuntimeConfig {
+    realtime_enabled: bool,
+    shown_background_hint: bool,
+}
+
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self {
+            realtime_enabled: true,
+            shown_background_hint: false,
+        }
+    }
+}
+
+fn config_path() -> PathBuf {
+    let base_dir = dirs::data_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    base_dir
+        .join("StellarAntivirus")
+        .join("runtime_config.json")
+}
+
+fn load_runtime_config() -> RuntimeConfig {
+    let p = config_path();
+    if let Ok(bytes) = fs::read(&p) {
+        if let Ok(cfg) = serde_json::from_slice::<RuntimeConfig>(&bytes) {
+            return cfg;
+        }
+    }
+    RuntimeConfig::default()
+}
+
+fn save_runtime_config(cfg: &RuntimeConfig) {
+    let p = config_path();
+    if let Some(parent) = p.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_vec_pretty(cfg) {
+        let _ = fs::write(p, json);
+    }
+}
 
 // ---- Payloads to frontend ----
 
@@ -92,40 +145,19 @@ struct ThreatApiRequest {
     files: Vec<ThreatApiFile>,
 }
 
-// Robust deserializer: accept string/number/bool/null into Option<String>
-fn de_opt_string_any<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let v = serde_json::Value::deserialize(deserializer)?;
-    Ok(match v {
-        serde_json::Value::Null => None,
-        serde_json::Value::String(s) => Some(s),
-        serde_json::Value::Number(n) => Some(n.to_string()),
-        serde_json::Value::Bool(b) => Some(b.to_string()),
-        other => Some(other.to_string()),
-    })
-}
-
 #[derive(Deserialize, Clone)]
 struct ThreatApiSignature {
-    // Laravel might send numeric IDs. DB might be null. Humans are creative.
-    #[serde(default, deserialize_with = "de_opt_string_any")]
-    id: Option<String>,
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    family: Option<String>,
-    #[serde(default)]
-    category: Option<String>,
-    #[serde(default)]
-    severity: Option<String>,
+    id: String,
+    name: String,
+    family: String,
+    category: String,
+    severity: String,
 }
 
 #[derive(Deserialize, Clone)]
 struct ThreatApiResult {
     sha256: String,
-    verdict: String, // e.g. "clean", "malware", "pua", "unknown"
+    verdict: String,
     signature: Option<ThreatApiSignature>,
     recommended_action: Option<String>,
 }
@@ -147,7 +179,6 @@ fn quarantine_root() -> PathBuf {
     base_dir.join("StellarAntivirus").join("Quarantine")
 }
 
-// Simple test-file rule (filename)
 fn is_test_filename(path: &Path) -> bool {
     if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
         let lower = name.to_lowercase();
@@ -180,7 +211,6 @@ fn build_http_client() -> Result<Client, String> {
     Client::builder()
         .connect_timeout(Duration::from_secs(HTTP_CONNECT_TIMEOUT_SECS))
         .timeout(Duration::from_secs(HTTP_TOTAL_TIMEOUT_SECS))
-        .user_agent("StellarAntivirus/1.0.0")
         .build()
         .map_err(|e| format!("Failed to build HTTP client: {e}"))
 }
@@ -207,7 +237,7 @@ fn call_threat_api_batch(files: Vec<ThreatApiFile>) -> Result<Vec<ThreatApiResul
 
     println!("[HTTP] POST {} ({} files total)", url, files.len());
 
-    for (chunk_idx, chunk) in files.chunks(CHUNK_SIZE).enumerate() {
+    for (chunk_index, chunk) in files.chunks(CHUNK_SIZE).enumerate() {
         let req = ThreatApiRequest {
             client: build_client_payload(),
             files: chunk.to_vec(),
@@ -218,40 +248,32 @@ fn call_threat_api_batch(files: Vec<ThreatApiFile>) -> Result<Vec<ThreatApiResul
         for attempt in 0..=HTTP_RETRIES {
             println!(
                 "[HTTP] chunk {}/{} attempt {}/{} ({} items)",
-                chunk_idx + 1,
+                chunk_index + 1,
                 (files.len() + CHUNK_SIZE - 1) / CHUNK_SIZE,
                 attempt + 1,
                 HTTP_RETRIES + 1,
                 chunk.len()
             );
 
-            let t0 = std::time::Instant::now();
-
-            let resp = client
-                .post(&url)
-                .header(reqwest::header::ACCEPT, "application/json")
-                .json(&req)
-                .send();
+            let started = std::time::Instant::now();
+            let resp = client.post(&url).json(&req).send();
 
             match resp {
                 Ok(r) => {
                     let status = r.status();
-                    let elapsed = t0.elapsed();
-
-                    println!(
-                        "[HTTP] status={} in {:?} (chunk {})",
-                        status,
-                        elapsed,
-                        chunk_idx + 1
-                    );
+                    let elapsed = started.elapsed();
 
                     if !status.is_success() {
-                        // Try to read body to help debugging even when status != 2xx
-                        let body = r.text().unwrap_or_else(|_| "<failed to read body>".to_string());
-                        let msg = format!("API returned HTTP {} body_snippet={}", status, body);
+                        let msg = format!("API returned HTTP {}", status);
                         last_err = Some(msg.clone());
 
-                        // Retry on transient server errors.
+                        println!(
+                            "[HTTP] status={} in {:?} (chunk {})",
+                            status,
+                            elapsed,
+                            chunk_index + 1
+                        );
+
                         if attempt < HTTP_RETRIES && status.is_server_error() {
                             thread::sleep(Duration::from_millis(400));
                             continue;
@@ -259,30 +281,35 @@ fn call_threat_api_batch(files: Vec<ThreatApiFile>) -> Result<Vec<ThreatApiResul
                         return Err(msg);
                     }
 
-                    // Read bytes and parse manually so we can log snippet on parse error.
-                    let headers = r.headers().clone();
-                    let body_bytes = r
-                        .bytes()
-                        .map_err(|e| format!("Failed to read API response body: {e}"))?;
+                    println!(
+                        "[HTTP] status={} in {:?} (chunk {})",
+                        status,
+                        elapsed,
+                        chunk_index + 1
+                    );
 
-                    let ct = headers
+                    // Clone headers before consuming body
+                    let headers = r.headers().clone();
+                    let content_type = headers
                         .get(reqwest::header::CONTENT_TYPE)
                         .and_then(|v| v.to_str().ok())
-                        .unwrap_or("<missing>");
+                        .unwrap_or("unknown")
+                        .to_string();
+
+                    let bytes = r
+                        .bytes()
+                        .map_err(|e| format!("Failed to read API body: {e}"))?;
 
                     println!(
                         "[HTTP] response content-type={} bytes={}",
-                        ct,
-                        body_bytes.len()
+                        content_type,
+                        bytes.len()
                     );
 
-                    let parsed: ThreatApiResponse = serde_json::from_slice(&body_bytes).map_err(|e| {
-                        let snippet_len = body_bytes.len().min(800);
-                        let snippet = String::from_utf8_lossy(&body_bytes[..snippet_len]);
-                        format!(
-                            "Failed to parse API JSON: {e} | content-type={} | body_snippet={}",
-                            ct, snippet
-                        )
+                    let parsed: ThreatApiResponse = serde_json::from_slice(&bytes).map_err(|e| {
+                        let preview_len = bytes.len().min(200);
+                        let preview = String::from_utf8_lossy(&bytes[..preview_len]);
+                        format!("Failed to parse API JSON: {e}. body_preview={preview}")
                     })?;
 
                     all_results.extend(parsed.results);
@@ -293,7 +320,6 @@ fn call_threat_api_batch(files: Vec<ThreatApiFile>) -> Result<Vec<ThreatApiResul
                     let msg = format!("API request error: {e}");
                     last_err = Some(msg.clone());
 
-                    // Retry once on network/timeouts.
                     if attempt < HTTP_RETRIES {
                         thread::sleep(Duration::from_millis(400));
                         continue;
@@ -334,13 +360,10 @@ fn run_hash_lookup_scan(
         return Ok(());
     }
 
-    println!(
-        "[SCAN] {} starting. paths_to_scan={}",
-        notification_label, total
-    );
+    println!("[SCAN] {} starting. paths_to_scan={}", notification_label, total);
 
-    // Hash files + emit progress
-    let t0 = std::time::Instant::now();
+    let started_hash = std::time::Instant::now();
+
     let mut index_to_path: Vec<(usize, PathBuf, String)> = Vec::with_capacity(total);
 
     for (i, path) in paths_to_scan.iter().enumerate() {
@@ -359,22 +382,19 @@ fn run_hash_lookup_scan(
             index_to_path.push((i, path.clone(), hash));
         }
 
-        // Let UI breathe on fast disks
         if i % 100 == 0 {
             thread::sleep(Duration::from_millis(5));
         }
     }
 
-    let hashing_elapsed = t0.elapsed();
     println!(
         "[SCAN] {} hashing done in {:?}. hashed_ok={}/{}",
         notification_label,
-        hashing_elapsed,
+        started_hash.elapsed(),
         index_to_path.len(),
         total
     );
 
-    // Build API payload
     let mut files_for_api: Vec<ThreatApiFile> = Vec::new();
     for (_idx, path, hash) in &index_to_path {
         let ext = path
@@ -390,13 +410,11 @@ fn run_hash_lookup_scan(
         });
     }
 
-    // Call API (chunked + timeout + retry)
     let api_results = match call_threat_api_batch(files_for_api) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[SCAN] {} API error: {}", notification_label, e);
 
-            // Never leave the UI stuck in scanning state.
             let _ = app.emit("scan_finished", ScanFinishedPayload { threats: vec![] });
 
             let _ = app
@@ -410,14 +428,12 @@ fn run_hash_lookup_scan(
         }
     };
 
-    // Map sha256 -> file path
     use std::collections::HashMap;
     let mut hash_to_path: HashMap<String, String> = HashMap::new();
     for (_idx, path, hash) in &index_to_path {
         hash_to_path.insert(hash.to_lowercase(), path.to_string_lossy().to_string());
     }
 
-    // Build threats list
     let mut threats_vec: Vec<(String, String)> = Vec::new();
 
     for r in api_results {
@@ -430,14 +446,13 @@ fn run_hash_lookup_scan(
             let name = r
                 .signature
                 .as_ref()
-                .and_then(|s| s.name.clone())
+                .map(|s| s.name.clone())
                 .unwrap_or_else(|| "Unknown threat".to_string());
 
             threats_vec.push((name, path_str.clone()));
         }
     }
 
-    // Emit finished event
     let _ = app.emit(
         "scan_finished",
         ScanFinishedPayload {
@@ -445,7 +460,6 @@ fn run_hash_lookup_scan(
         },
     );
 
-    // System notification
     if !threats_vec.is_empty() {
         let _ = app
             .notification()
@@ -468,33 +482,40 @@ fn run_hash_lookup_scan(
     Ok(())
 }
 
+fn try_add_path(
+    paths: &mut Vec<PathBuf>,
+    p: PathBuf,
+    max_files: usize,
+    max_file_bytes: Option<u64>,
+    skipped_too_big: &mut usize,
+) -> bool {
+    if paths.len() >= max_files {
+        return false;
+    }
+
+    if let Some(limit) = max_file_bytes {
+        match fs::metadata(&p) {
+            Ok(m) => {
+                if m.len() > limit {
+                    *skipped_too_big += 1;
+                    return true;
+                }
+            }
+            Err(_) => return true,
+        }
+    }
+
+    paths.push(p);
+    true
+}
+
 fn collect_paths(
     max_depth: usize,
     max_files: usize,
     include_documents: bool,
     include_desktop: bool,
     max_file_bytes: Option<u64>,
-) -> (Vec<PathBuf>, usize) {
-    fn push_if_ok(
-        paths: &mut Vec<PathBuf>,
-        skipped_too_big: &mut usize,
-        max_file_bytes: Option<u64>,
-        p: PathBuf,
-    ) {
-        if let Some(limit) = max_file_bytes {
-            match fs::metadata(&p) {
-                Ok(m) => {
-                    if m.len() > limit {
-                        *skipped_too_big += 1;
-                        return;
-                    }
-                }
-                Err(_) => return,
-            }
-        }
-        paths.push(p);
-    }
-
+) -> Vec<PathBuf> {
     let mut paths_to_scan: Vec<PathBuf> = Vec::new();
     let mut skipped_too_big: usize = 0;
 
@@ -508,12 +529,15 @@ fn collect_paths(
                 break;
             }
             if entry.file_type().is_file() {
-                push_if_ok(
+                if !try_add_path(
                     &mut paths_to_scan,
-                    &mut skipped_too_big,
-                    max_file_bytes,
                     entry.into_path(),
-                );
+                    max_files,
+                    max_file_bytes,
+                    &mut skipped_too_big,
+                ) {
+                    break;
+                }
             }
         }
     }
@@ -529,12 +553,15 @@ fn collect_paths(
                     break;
                 }
                 if entry.file_type().is_file() {
-                    push_if_ok(
+                    if !try_add_path(
                         &mut paths_to_scan,
-                        &mut skipped_too_big,
-                        max_file_bytes,
                         entry.into_path(),
-                    );
+                        max_files,
+                        max_file_bytes,
+                        &mut skipped_too_big,
+                    ) {
+                        break;
+                    }
                 }
             }
         }
@@ -551,21 +578,33 @@ fn collect_paths(
                     break;
                 }
                 if entry.file_type().is_file() {
-                    push_if_ok(
+                    if !try_add_path(
                         &mut paths_to_scan,
-                        &mut skipped_too_big,
-                        max_file_bytes,
                         entry.into_path(),
-                    );
+                        max_files,
+                        max_file_bytes,
+                        &mut skipped_too_big,
+                    ) {
+                        break;
+                    }
                 }
             }
         }
     }
 
-    paths_to_scan.truncate(max_files);
-    (paths_to_scan, skipped_too_big)
-}
+    println!(
+        "[SCAN] collect_paths depth={} max_files={} include_docs={} include_desktop={} limit_bytes={:?} -> kept={} skipped_too_big={}",
+        max_depth,
+        max_files,
+        include_documents,
+        include_desktop,
+        max_file_bytes,
+        paths_to_scan.len(),
+        skipped_too_big
+    );
 
+    paths_to_scan
+}
 
 // ---- Commands ----
 
@@ -576,18 +615,8 @@ async fn fake_full_scan(app: AppHandle) -> Result<(), String> {
 
     let app2 = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let (paths_to_scan, skipped) =
+        let paths_to_scan =
             collect_paths(MAX_DEPTH, MAX_FILES, true, true, Some(FULL_MAX_FILE_BYTES));
-
-        println!(
-            "[SCAN] collect_paths depth={} max_files={} include_docs=true include_desktop=true limit_bytes={:?} -> kept={} skipped_too_big={}",
-            MAX_DEPTH,
-            MAX_FILES,
-            Some(FULL_MAX_FILE_BYTES),
-            paths_to_scan.len(),
-            skipped
-        );
-
         run_hash_lookup_scan(app2, paths_to_scan, "Full scan")
     })
     .await
@@ -595,24 +624,15 @@ async fn fake_full_scan(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn quick_scan(app: AppHandle) -> Result<(), String> {
+async fn quick_scan(app: AppHandle, max_bytes: Option<u64>) -> Result<(), String> {
     const MAX_DEPTH: usize = 2;
     const MAX_FILES: usize = 150;
 
+    let limit = max_bytes.unwrap_or(QUICK_MAX_FILE_BYTES);
+
     let app2 = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let (paths_to_scan, skipped) =
-            collect_paths(MAX_DEPTH, MAX_FILES, false, true, Some(QUICK_MAX_FILE_BYTES));
-
-        println!(
-            "[SCAN] collect_paths depth={} max_files={} include_docs=false include_desktop=true limit_bytes={:?} -> kept={} skipped_too_big={}",
-            MAX_DEPTH,
-            MAX_FILES,
-            Some(QUICK_MAX_FILE_BYTES),
-            paths_to_scan.len(),
-            skipped
-        );
-
+        let paths_to_scan = collect_paths(MAX_DEPTH, MAX_FILES, false, true, Some(limit));
         run_hash_lookup_scan(app2, paths_to_scan, "Quick scan")
     })
     .await
@@ -620,8 +640,18 @@ async fn quick_scan(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn get_realtime_enabled() -> bool {
+    REALTIME_ENABLED.load(Ordering::SeqCst)
+}
+
+#[tauri::command]
 fn set_realtime_enabled(enabled: bool) {
     REALTIME_ENABLED.store(enabled, Ordering::SeqCst);
+
+    let mut cfg = load_runtime_config();
+    cfg.realtime_enabled = enabled;
+    save_runtime_config(&cfg);
+
     println!("Realtime protection set to: {enabled}");
 }
 
@@ -821,7 +851,6 @@ fn start_realtime_watcher(app_handle: AppHandle) {
                 None => continue,
             };
 
-            // Ignore quarantine folder activity (prevents "remove threat" causing re-detect)
             if path.starts_with(&quarantine_dir) {
                 continue;
             }
@@ -852,10 +881,8 @@ fn start_realtime_watcher(app_handle: AppHandle) {
                 continue;
             }
 
-            // Let editors finish writing
             thread::sleep(Duration::from_millis(20));
 
-            // Suppress duplicates for the same file within a short window
             let now = Instant::now();
             if let Some(last) = recent_hits.get(&file) {
                 if now.duration_since(*last) < suppress_window {
@@ -883,7 +910,7 @@ fn start_realtime_watcher(app_handle: AppHandle) {
                             let name = result
                                 .signature
                                 .as_ref()
-                                .and_then(|s| s.name.clone())
+                                .map(|s| s.name.clone())
                                 .unwrap_or_else(|| "Unknown threat".to_string());
 
                             detected_name = Some(name);
@@ -896,11 +923,11 @@ fn start_realtime_watcher(app_handle: AppHandle) {
                 }
             }
 
-            if let Some(name) = detected_name {
+            if detected_name.is_some() {
                 let _ = app_handle.emit(
                     "realtime_threat_detected",
                     ScanFinishedPayload {
-                        threats: vec![(name.clone(), file.clone())],
+                        threats: vec![("Threat detected".to_string(), file.clone())],
                     },
                 );
 
@@ -915,72 +942,164 @@ fn start_realtime_watcher(app_handle: AppHandle) {
     });
 }
 
+// ---- Dock helpers (macOS) ----
+
+#[cfg(target_os = "macos")]
+fn set_dock_visible(app: &AppHandle, visible: bool) {
+    if let Err(e) = app.set_dock_visibility(visible) {
+        eprintln!("[DOCK] set_dock_visibility({visible}) failed: {e}");
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_dock_visible(_app: &AppHandle, _visible: bool) {}
+
+// ---- Tray helpers ----
+
+fn show_background_hint_once(app: &AppHandle) {
+    let mut cfg = load_runtime_config();
+    if cfg.shown_background_hint {
+        return;
+    }
+
+    cfg.shown_background_hint = true;
+    save_runtime_config(&cfg);
+
+    let _ = app
+        .notification()
+        .builder()
+        .title("Stellar Antivirus")
+        .body("Stellar Antivirus is still protecting you in the background. Use the menu bar icon to Quit.")
+        .show();
+}
+
+fn show_main_window(app: &AppHandle) {
+    // When we show UI, we want it back in the Dock (macOS).
+    set_dock_visible(app, true);
+
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
+fn hide_main_window(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.hide();
+    }
+
+    // When we hide UI, remove from Dock so it's a true background app (macOS).
+    set_dock_visible(app, false);
+}
+
+fn launched_via_autostart() -> bool {
+    std::env::args().any(|a| a == AUTOSTART_ARG)
+}
+
+fn init_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let open_i = MenuItemBuilder::new("Open").id("tray_open").build(app)?;
+    let hide_i = MenuItemBuilder::new("Hide").id("tray_hide").build(app)?;
+    let quit_i = MenuItemBuilder::new("Quit").id("tray_quit").build(app)?;
+
+    let menu = MenuBuilder::new(app)
+        .items(&[&open_i, &hide_i, &quit_i])
+        .build()?;
+
+    let icon = app
+        .default_window_icon()
+        .cloned()
+        .expect("Missing default window icon for tray");
+
+    TrayIconBuilder::new()
+        .menu(&menu)
+        .icon(icon)
+        .icon_as_template(true)
+        .tooltip("Stellar Antivirus")
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "tray_open" => show_main_window(app),
+            "tray_hide" => hide_main_window(app),
+            "tray_quit" => {
+                // Allow a real quit only from tray Quit
+                ALLOW_EXIT.store(true, Ordering::SeqCst);
+                app.exit(0);
+            }
+            _ => {}
+        })
+        .build(app)?;
+
+    Ok(())
+}
+
 // ---- App entry ----
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let is_autostart = launched_via_autostart();
+
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
-            None,
+            Some(vec![AUTOSTART_ARG.into()]),
         ))
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             fake_full_scan,
             quick_scan,
+            get_realtime_enabled,
             set_realtime_enabled,
             quarantine_files,
             restore_from_quarantine,
             delete_quarantine_files,
             delete_files,
         ])
-        .setup(|app| {
-            // Start realtime watcher immediately (so it’s alive after reboot/login)
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                show_background_hint_once(window.app_handle());
+                hide_main_window(window.app_handle());
+            }
+        })
+        .setup(move |app| {
+            // Load persisted realtime toggle before watcher starts
+            let cfg = load_runtime_config();
+            REALTIME_ENABLED.store(cfg.realtime_enabled, Ordering::SeqCst);
+            println!("[BOOT] realtime_enabled={}", cfg.realtime_enabled);
+
+            // Tray so app can live in background
+            init_tray(app)?;
+
+            // Start watcher (this is what actually does real-time)
             let handle = app.handle().clone();
             start_realtime_watcher(handle);
 
-            // Tray menu (Show / Quit)
-            let menu = MenuBuilder::new(app)
-                .text("show", "Show Stellar Antivirus")
-                .separator()
-                .text("quit", "Quit")
-                .build()
-                .map_err(|e| format!("Failed to build tray menu: {e}"))?;
-
-            let mut tray = TrayIconBuilder::with_id("stellar_antivirus_tray")
-                .menu(&menu)
-                .tooltip("Stellar Antivirus");
-
-            if let Some(icon) = app.default_window_icon().cloned() {
-                tray = tray.icon(icon);
+            // If launched by autostart, boot silently (hidden + no Dock icon on macOS)
+            if is_autostart {
+                hide_main_window(app.handle());
             }
-
-            tray.on_menu_event(|app, event| {
-                match event.id().as_ref() {
-                    "show" => {
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                        }
-                    }
-                    "quit" => {
-                        app.exit(0);
-                    }
-                    _ => {}
-                }
-            })
-            .build(app)
-            .map_err(|e| format!("Failed to build tray icon: {e}"))?;
 
             Ok(())
         })
-        // IMPORTANT: don’t let window close kill the process
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let _ = window.hide();
-                api.prevent_close();
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| match event {
+        // Cmd+Q / Dock Quit / app exit request => HIDE, don't exit (unless tray Quit set ALLOW_EXIT)
+        RunEvent::ExitRequested { api, .. } => {
+            if ALLOW_EXIT.load(Ordering::SeqCst) {
+                return;
             }
-        })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+
+            api.prevent_exit();
+            show_background_hint_once(app_handle);
+            hide_main_window(app_handle);
+        }
+
+        // Clicking Dock icon / reopening should bring it back (also re-adds Dock icon)
+        RunEvent::Reopen { .. } => {
+            show_main_window(app_handle);
+        }
+
+        _ => {}
+    });
 }

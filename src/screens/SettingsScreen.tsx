@@ -111,7 +111,7 @@ const SettingsScreen: React.FC<SettingsScreenProps> = ({
               Signal
             </div>
             <div className="text-xs  font-normal text-[#2761FC]">
-              @StellarSecurity
+              @StellarSecurity.30
             </div>
             <div className="text-[12px] text-[#62626A] mt-1">
               Preferred for secure chat.
