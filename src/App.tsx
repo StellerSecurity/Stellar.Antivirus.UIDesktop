@@ -147,6 +147,14 @@ const pushLogDedup = (prev: ScanLogEntry[], entry: ScanLogEntry) => {
   return [entry, ...prev];
 };
 
+// Rust probe payload (must match your tauri command)
+type FsAccessProbe = {
+  label: string;
+  path: string;
+  ok: boolean;
+  error?: string | null;
+};
+
 const App: React.FC = () => {
   const [view, setView] = useState<View>(getInitialView);
 
@@ -185,14 +193,6 @@ const App: React.FC = () => {
   const [quarantine, setQuarantine] = useState<QuarantineEntry[]>([]);
   const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
-
-  // Request notification permission once
-  useEffect(() => {
-    if (!canUseNotifications) return;
-    if (Notification.permission === "default") {
-      Notification.requestPermission().catch(() => {});
-    }
-  }, []);
 
   // Load stored logs/threats/quarantine from localStorage
   useEffect(() => {
@@ -532,8 +532,6 @@ const App: React.FC = () => {
     try {
       setStatus("scanning");
       setScanProgress({ current: 0, total: 0, file: "" });
-
-      // Rust quick_scan takes no args in your lib.rs (keep it consistent).
       await invoke("quick_scan");
     } catch (err) {
       console.error("Quick scan error:", err);
@@ -754,7 +752,10 @@ const App: React.FC = () => {
         setDashboard(res);
 
         if (typeof window !== "undefined") {
-          window.localStorage.setItem(STORAGE_KEYS.dashboard, JSON.stringify(res));
+          window.localStorage.setItem(
+              STORAGE_KEYS.dashboard,
+              JSON.stringify(res)
+          );
         }
       } catch (err) {
         console.error("Failed to fetch dashboard", err);
@@ -809,7 +810,48 @@ const App: React.FC = () => {
     }
   };
 
-  const handleOnboardingAllow = () => {
+  // ✅ FIXED: this actually requests permissions (notifications + fs probe)
+  const handleOnboardingAllow = async () => {
+    // 1) Ask for notifications permission (if available)
+    if (canUseNotifications && Notification.permission === "default") {
+      try {
+        await Notification.requestPermission();
+      } catch {
+        // ignore
+      }
+    }
+
+    // 2) Probe filesystem access via Rust (Tauri only)
+    if (isTauri) {
+      try {
+        const probes = await invoke<FsAccessProbe[]>("probe_fs_access");
+        const failed = (probes || []).filter((p) => !p.ok);
+
+        if (failed.length > 0) {
+          console.warn("Folder access probe failed:", failed);
+
+          alert(
+              "Stellar Antivirus needs access to Desktop/Documents/Downloads.\n\n" +
+              "macOS might be blocking it. Please allow access in the system prompt, or in System Settings.\n\n" +
+              failed
+                  .map(
+                      (f) =>
+                          `${f.label}: ${f.path}\n${f.error ?? "blocked"}`
+                  )
+                  .join("\n\n")
+          );
+
+          // Do NOT mark as granted if we know access is blocked
+          return;
+        }
+      } catch (err) {
+        console.error("probe_fs_access failed:", err);
+        alert("Could not verify folder permissions. Please try again.");
+        return;
+      }
+    }
+
+    // 3) Mark granted and continue
     if (typeof window !== "undefined") {
       window.localStorage.setItem(STORAGE_KEYS.permissionsGranted, "1");
     }

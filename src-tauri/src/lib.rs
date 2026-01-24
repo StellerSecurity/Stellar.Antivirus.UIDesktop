@@ -608,6 +608,79 @@ fn collect_paths(
 
 // ---- Commands ----
 
+
+#[derive(serde::Serialize)]
+struct FsAccessProbe {
+    label: String,
+    path: String,
+    ok: bool,
+    error: Option<String>,
+}
+
+fn probe_one(label: &str, p: std::path::PathBuf) -> FsAccessProbe {
+    // Try to list directory entries to force a real permission/access check.
+    match std::fs::read_dir(&p) {
+        Ok(mut it) => {
+            // Touch first entry (if any) to trigger real FS access.
+            let _ = it.next();
+            FsAccessProbe {
+                label: label.to_string(),
+                path: p.to_string_lossy().to_string(),
+                ok: true,
+                error: None,
+            }
+        }
+        Err(e) => FsAccessProbe {
+            label: label.to_string(),
+            path: p.to_string_lossy().to_string(),
+            ok: false,
+            error: Some(e.to_string()),
+        },
+    }
+}
+
+#[tauri::command]
+fn probe_fs_access() -> Vec<FsAccessProbe> {
+    let mut out: Vec<FsAccessProbe> = Vec::new();
+
+    if let Some(p) = dirs::download_dir() {
+        out.push(probe_one("Downloads", p));
+    } else {
+        out.push(FsAccessProbe {
+            label: "Downloads".to_string(),
+            path: "(not found)".to_string(),
+            ok: false,
+            error: Some("dirs::download_dir() returned None".to_string()),
+        });
+    }
+
+    if let Some(p) = dirs::document_dir() {
+        out.push(probe_one("Documents", p));
+    } else {
+        out.push(FsAccessProbe {
+            label: "Documents".to_string(),
+            path: "(not found)".to_string(),
+            ok: false,
+            error: Some("dirs::document_dir() returned None".to_string()),
+        });
+    }
+
+    if let Some(p) = dirs::desktop_dir() {
+        out.push(probe_one("Desktop", p));
+    } else {
+        out.push(FsAccessProbe {
+            label: "Desktop".to_string(),
+            path: "(not found)".to_string(),
+            ok: false,
+            error: Some("dirs::desktop_dir() returned None".to_string()),
+        });
+    }
+
+    out
+}
+
+
+
 #[tauri::command]
 async fn fake_full_scan(app: AppHandle) -> Result<(), String> {
     const MAX_DEPTH: usize = 3;
@@ -1052,6 +1125,7 @@ pub fn run() {
             restore_from_quarantine,
             delete_quarantine_files,
             delete_files,
+            probe_fs_access
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
