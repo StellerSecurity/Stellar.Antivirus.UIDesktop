@@ -1,8 +1,8 @@
 {
-  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "stellar-antivirus-ui",
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Stellar Antivirus",
   "version": "0.1.0",
-  "identifier": "com.tauri.dev",
+  "identifier": "org.stellarsecurity.antivirus.desktop",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:3000",
@@ -13,8 +13,8 @@
     "windows": [
       {
         "title": "Stellar Antivirus",
-        "width": 1100,
-        "height": 800,
+        "width": 1200,
+        "height": 720,
         "resizable": false,
         "fullscreen": false
       }
@@ -32,6 +32,15 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU2OEQ5NkQyQzc1QUMxNzAKUldSd3dWckgwcGFONXNQem5wZWpDaGRTU2V3TXNjbGNwd2Y1QTZBZFdYWmFJd1RtbGtITWZUM0kK",
+      "endpoints": [
+        "https://desktopreleasesassetsprod.stellarsecurity.com/antivirus/latest.json"
+      ]
+    }
   }
 }

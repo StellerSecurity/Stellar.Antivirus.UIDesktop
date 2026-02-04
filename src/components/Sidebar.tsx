@@ -3,69 +3,131 @@ import React from "react";
 export type SidebarView = "dashboard" | "logs" | "settings";
 
 interface Props {
-    current: SidebarView;
-    onChange: (view: SidebarView) => void;
+  current: SidebarView;
+  onChange: (view: SidebarView) => void;
+  onLogout?: () => void;
 }
 
-const Sidebar: React.FC<Props> = ({ current, onChange }) => {
-    return (
-        <aside className="w-64 bg-[#0B1240] text-white flex flex-col px-6 py-6">
-            <div className="flex items-center gap-3 mb-8">
-                <div className="w-10 h-10 rounded-2xl bg-white/10 flex items-center justify-center">
-                    <span className="text-xl">🛡️</span>
-                </div>
-                <div>
-                    <div className="text-sm opacity-70">Stellar Security</div>
-                    <div className="text-lg font-semibold">Stellar Antivirus</div>
-                </div>
-            </div>
+const Sidebar: React.FC<Props> = ({ current, onChange, onLogout }) => {
+  return (
+    <aside className="w-[240px] bg-[#0B0C19] text-white flex flex-col px-[20px] py-[14px]">
+      {/* Logo Section */}
+      <div className="flex items-center gap-3 mb-8">
+        <img
+          src="/dashboard/dashboard-logo.svg"
+          alt="Stellar"
+          className="w-full"
+        />
+      </div>
 
-            <nav className="space-y-2 flex-1">
-                <SidebarItem
-                    label="Dashboard"
-                    active={current === "dashboard"}
-                    onClick={() => onChange("dashboard")}
-                />
-                <SidebarItem
-                    label="Activity Log"
-                    active={current === "logs"}
-                    onClick={() => onChange("logs")}
-                />
-                <SidebarItem
-                    label="Settings"
-                    active={current === "settings"}
-                    onClick={() => onChange("settings")}
-                />
-            </nav>
+      <nav className="space-y-6 flex-1">
+        {/* OVERVIEW Section */}
+        <div>
+          <div className="text-[10px] font-medium text-[#62626A] uppercase tracking-wide mb-3">
+            OVERVIEW
+          </div>
+          <div className="space-y-1">
+            <SidebarItem
+              icon="/dashboard/dashboard.svg"
+              label="DASHBOARD"
+              active={current === "dashboard"}
+              onClick={() => onChange("dashboard")}
+            />
+            <SidebarItem
+              icon="/dashboard/recent-activity.svg"
+              label="ACTIVITY LOG"
+              active={current === "logs"}
+              onClick={() => onChange("logs")}
+            />
+          </div>
+        </div>
 
-            <div className="mt-auto pt-6 text-xs text-white/60">
-                Powered by Stellar Security
-            </div>
-        </aside>
-    );
+        {/* SETTINGS Section */}
+        <div>
+          <div className="text-[10px] font-medium text-[#62626A] uppercase tracking-wide mb-3">
+            SETTINGS
+          </div>
+          <div className="space-y-1">
+            <SidebarItem
+              icon="/dashboard/settings.svg"
+              label="SETTINGS"
+              active={current === "settings"}
+              onClick={() => onChange("settings")}
+            />
+            <SidebarItem
+              icon="/dashboard/logout.svg"
+              label="LOG OUT"
+              active={false}
+              onClick={() => onLogout?.()}
+              isLogout
+            />
+          </div>
+        </div>
+      </nav>
+
+      {/* Footer */}
+      <div className="mt-auto pt-6">
+        <div className="text-[10px] font-medium text-[#2761FC] text-center mb-2">
+          POWERED BY
+        </div>
+        <div className="flex justify-center items-center gap-2">
+          <img
+            src="dashboard/security.svg"
+            alt=""
+            className="w-[15px] h-[15px]"
+          />
+          <span className="text-sm font-semibold text-white">
+            Stellar Security
+          </span>
+        </div>
+      </div>
+    </aside>
+  );
 };
 
 interface ItemProps {
-    label: string;
-    active?: boolean;
-    onClick: () => void;
+  icon: string;
+  label: string;
+  active?: boolean;
+  onClick: () => void;
+  isLogout?: boolean;
 }
 
-const SidebarItem: React.FC<ItemProps> = ({ label, active, onClick }) => {
-    return (
-        <button
-            onClick={onClick}
-            className={`w-full flex items-center justify-between px-3 py-3 rounded-2xl text-sm transition
-      ${
-                active
-                    ? "bg-white text-[#0B1240] font-semibold shadow-[0_8px_24px_rgba(15,23,42,0.18)]"
-                    : "text-white/80 hover:bg-white/5"
-            }`}
-        >
-            <span>{label}</span>
-            <span className="text-xs opacity-60">›</span>
-        </button>
-    );
+const SidebarItem: React.FC<ItemProps> = ({
+  icon,
+  label,
+  active,
+  onClick,
+  isLogout,
+}) => {
+  const textColor = isLogout
+    ? "text-red-500"
+    : active
+    ? "text-[#2761FC]"
+    : "text-white";
+
+  return (
+    <button
+      onClick={onClick}
+      className="w-full flex items-center gap-3 px-3 py-3 rounded-2xl text-[14px] font-semibold font-poppins transition hover:opacity-80"
+    >
+      <div
+        className={`w-5 h-5 ${textColor}`}
+        style={{
+          maskImage: `url(${icon})`,
+          WebkitMaskImage: `url(${icon})`,
+          maskSize: "contain",
+          WebkitMaskSize: "contain",
+          maskRepeat: "no-repeat",
+          WebkitMaskRepeat: "no-repeat",
+          maskPosition: "center",
+          WebkitMaskPosition: "center",
+          backgroundColor: "currentColor",
+        }}
+      />
+      <span className={textColor}>{label}</span>
+    </button>
+  );
 };
 
 export default Sidebar;
