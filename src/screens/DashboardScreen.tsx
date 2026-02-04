@@ -1,4 +1,5 @@
-import React from "react";
+import React, { useEffect, useMemo, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import type { ProtectionStatus, ScanLogEntry } from "../types";
 import Button from "../components/Button";
 import Spinner from "../components/Spinner";
@@ -21,6 +22,16 @@ interface Props {
   onOpenActivityLog: () => void;
   scanProgress: ScanProgress;
 }
+
+type LatestJson = {
+  version?: string;
+  notes?: string;
+  pub_date?: string;
+  platforms?: Record<string, { url?: string; signature?: string }>;
+};
+
+const LATEST_JSON_URL =
+    "https://desktopreleasesassetsprod.stellarsecurity.com/antivirus/latest.json";
 
 const DashboardScreen: React.FC<Props> = ({
                                             status,
@@ -93,7 +104,10 @@ const DashboardScreen: React.FC<Props> = ({
       /Linux/i.test(navigator.userAgent) &&
       !/Android/i.test(navigator.userAgent);
 
-  const linuxUpdateCommand = `curl -fsSL https://desktopreleasesassetsprod.stellarsecurity.com/antivirus/latest.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['platforms']['linux-x86_64']['url'])" | xargs -I{} sh -lc 'set -e; TMP=$(mktemp -d); curl -fL \"{}\" -o \"$TMP/stellar-antivirus.deb\"; sudo apt-get update -y >/dev/null; sudo apt-get install -y \"$TMP/stellar-antivirus.deb\"'`;
+  // VPN-style: latest.json -> platforms.linux-x86_64.url -> apt install
+  const linuxUpdateCommand = useMemo(() => {
+    return `curl -fsSL ${LATEST_JSON_URL} | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['platforms']['linux-x86_64']['url'])" | xargs -I{} sh -lc 'set -e; TMP=$(mktemp -d); curl -fL \"{}\" -o \"$TMP/stellar-antivirus.deb\"; sudo apt-get update -y >/dev/null; sudo apt-get install -y \"$TMP/stellar-antivirus.deb\"'`;
+  }, []);
 
   const onCopyLinuxCommand = async () => {
     try {
@@ -110,6 +124,90 @@ const DashboardScreen: React.FC<Props> = ({
     }
   };
 
+  // --- Apple-like update availability UI (Linux only) ---
+  const [updateCheckState, setUpdateCheckState] = useState<
+      "idle" | "checking" | "ready" | "error"
+  >("idle");
+  const [currentVersion, setCurrentVersion] = useState<string | null>(null);
+  const [latestVersion, setLatestVersion] = useState<string | null>(null);
+  const [latestNotes, setLatestNotes] = useState<string | null>(null);
+
+  const normalizeVersion = (v: string) =>
+      v.trim().replace(/^v/i, "").split("+")[0].split("-")[0];
+
+  const compareSemver = (aRaw: string, bRaw: string) => {
+    // returns: -1 if a<b, 0 if equal, 1 if a>b
+    const a = normalizeVersion(aRaw);
+    const b = normalizeVersion(bRaw);
+
+    const pa = a.split(".").map((x) => parseInt(x, 10));
+    const pb = b.split(".").map((x) => parseInt(x, 10));
+
+    for (let i = 0; i < 3; i++) {
+      const da = Number.isFinite(pa[i]) ? pa[i] : 0;
+      const db = Number.isFinite(pb[i]) ? pb[i] : 0;
+      if (da > db) return 1;
+      if (da < db) return -1;
+    }
+    return 0;
+  };
+
+  const updateAvailable = useMemo(() => {
+    if (!isLinux) return false;
+    if (!currentVersion || !latestVersion) return false;
+    return compareSemver(currentVersion, latestVersion) < 0;
+  }, [isLinux, currentVersion, latestVersion]);
+
+  useEffect(() => {
+    if (!isLinux) return;
+
+    let cancelled = false;
+
+    const run = async () => {
+      try {
+        setUpdateCheckState("checking");
+
+        // Current version from Tauri
+        let ver: string | null = null;
+        try {
+          ver = await getVersion();
+        } catch {
+          ver = null;
+        }
+
+        if (!cancelled) setCurrentVersion(ver ? normalizeVersion(ver) : null);
+
+        const res = await fetch(LATEST_JSON_URL, { cache: "no-store" });
+        if (!res.ok) throw new Error(`latest.json HTTP ${res.status}`);
+        const json = (await res.json()) as LatestJson;
+
+        const lv = typeof json.version === "string" ? json.version : null;
+        const ln = typeof json.notes === "string" ? json.notes : null;
+
+        if (!cancelled) {
+          setLatestVersion(lv ? normalizeVersion(lv) : null);
+          setLatestNotes(ln);
+          setUpdateCheckState("ready");
+        }
+      } catch {
+        if (!cancelled) setUpdateCheckState("error");
+      }
+    };
+
+    run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isLinux]);
+
+  // Debug: keep for now while you validate
+  // console.log("[UPDATE] isLinux", isLinux);
+  // console.log("[UPDATE] currentVersion", currentVersion);
+  // console.log("[UPDATE] latestVersion", latestVersion);
+  // console.log("[UPDATE] state", updateCheckState);
+  // console.log("[UPDATE] available", updateAvailable);
+
   return (
       <div className="h-full flex flex-col gap-6">
         <div className="grid grid-cols-2 gap-6">
@@ -123,16 +221,14 @@ const DashboardScreen: React.FC<Props> = ({
                 Live file monitoring
               </h2>
               <p className="text-[12px] font-normal text-[#62626A]">
-                Scans new and modified files in real time to block threats before
-                they spread.
+                Scans new and modified files in real time to block threats before they
+                spread.
               </p>
             </div>
 
             <div className="mt-6 flex items-center justify-between">
               <div className="flex flex-col">
-              <span className="text-[10px] font-normal text-[#62626A]">
-                Status
-              </span>
+                <span className="text-[10px] font-normal text-[#62626A]">Status</span>
                 <span
                     className={`text-[14px] font-semibold ${
                         realtimeEnabled ? "text-[#2761FC]" : "text-[#111827]"
@@ -142,11 +238,7 @@ const DashboardScreen: React.FC<Props> = ({
               </span>
               </div>
 
-              <Toggle
-                  enabled={realtimeEnabled}
-                  onChange={onToggleRealtime}
-                  disabled={isScanning}
-              />
+              <Toggle enabled={realtimeEnabled} onChange={onToggleRealtime} disabled={isScanning} />
             </div>
           </div>
 
@@ -155,14 +247,8 @@ const DashboardScreen: React.FC<Props> = ({
             <div>
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
-                  <img
-                      src="/dashboard/dashboard.svg"
-                      alt=""
-                      className="w-4 h-4"
-                  />
-                  <span className="text-[14px] font-semibold text-white">
-                  FULL DISK SCAN
-                </span>
+                  <img src="/dashboard/dashboard.svg" alt="" className="w-4 h-4" />
+                  <span className="text-[14px] font-semibold text-white">FULL DISK SCAN</span>
                 </div>
 
                 <button
@@ -204,28 +290,14 @@ const DashboardScreen: React.FC<Props> = ({
                         fill="none"
                         xmlns="http://www.w3.org/2000/svg"
                     >
-                      <g
-                          stroke="currentColor"
-                          strokeWidth="1.5"
-                          strokeLinecap="round"
-                      >
+                      <g stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
                         <line x1="8" y1="2" x2="8" y2="4" />
                         <line x1="8" y1="12" x2="8" y2="14" />
                         <line x1="2" y1="8" x2="4" y2="8" />
                         <line x1="12" y1="8" x2="14" y2="8" />
                         <line x1="4.343" y1="4.343" x2="5.657" y2="5.657" />
-                        <line
-                            x1="10.343"
-                            y1="10.343"
-                            x2="11.657"
-                            y2="11.657"
-                        />
-                        <line
-                            x1="4.343"
-                            y1="11.657"
-                            x2="5.657"
-                            y2="10.343"
-                        />
+                        <line x1="10.343" y1="10.343" x2="11.657" y2="11.657" />
+                        <line x1="4.343" y1="11.657" x2="5.657" y2="10.343" />
                         <line x1="10.343" y1="5.657" x2="11.657" y2="4.343" />
                       </g>
                     </svg>
@@ -254,17 +326,13 @@ const DashboardScreen: React.FC<Props> = ({
                 Status:
               </span>
                 <div className="flex items-center gap-1">
-                <span className="text-[14px] font-semibold text-white">
-                  Latest scan -
-                </span>
+                  <span className="text-[14px] font-semibold text-white">Latest scan -</span>
                   {lastScan ? (
                       <span className="text-[14px] font-semibold text-white">
                     {lastScan.timestamp}
                   </span>
                   ) : (
-                      <span className="text-[14px] font-semibold text-white">
-                    No scans yet
-                  </span>
+                      <span className="text-[14px] font-semibold text-white">No scans yet</span>
                   )}
                 </div>
               </div>
@@ -325,25 +393,20 @@ const DashboardScreen: React.FC<Props> = ({
               {scanLabel}
             </div>
 
-            <h3 className="text-[20px] font-semibold text-white mb-[12px]">
-              {scanTitle}
-            </h3>
+            <h3 className="text-[20px] font-semibold text-white mb-[12px]">{scanTitle}</h3>
 
-            <p className="text-[12px] font-normal text-[#CFCFFF] mb-[12px]">
-              {scanBody}
-            </p>
+            <p className="text-[12px] font-normal text-[#CFCFFF] mb-[12px]">{scanBody}</p>
 
             {/* Horizontal progress bar */}
             <div className="mb-2">
               <div className="bg-[#4578FF] rounded-full px-[22px] py-[7px] flex items-center gap-7 h-[30px]">
                 <div className="flex-1 h-1 rounded-full bg-white overflow-hidden">
-                  {(isScanning || isCompletionHold || isFinalizing) &&
-                      hasProgress && (
-                          <div
-                              className="h-full bg-black transition-all duration-200"
-                              style={{ width: `${progressDisplay || 0}%` }}
-                          />
-                      )}
+                  {(isScanning || isCompletionHold || isFinalizing) && hasProgress && (
+                      <div
+                          className="h-full bg-black transition-all duration-200"
+                          style={{ width: `${progressDisplay || 0}%` }}
+                      />
+                  )}
                 </div>
 
                 {(isScanning || isCompletionHold || isFinalizing) && hasProgress && (
@@ -375,50 +438,127 @@ const DashboardScreen: React.FC<Props> = ({
           </div>
         </div>
 
-        {/* Linux update command card (VPN-style) */}
-        {isLinux && (
-            <div className="bg-white rounded-[24px] p-[22px] h-auto">
-              <div className="flex items-center justify-between mb-[12px]">
-                <div>
-                  <div className="flex items-center gap-2 mb-[12px]">
-                    <img
-                        src="/dashboard/recent-activity.svg"
-                        alt=""
-                        className="w-4 h-4"
-                    />
-                    <h3 className="text-sm font-semibold text-[#2761FC] uppercase">
-                      Update on Linux
+        {/* Checking state (Linux only) */}
+        {isLinux && updateCheckState === "checking" && (
+            <div className="bg-white rounded-[24px] p-[18px] border border-[#E5E7EB] flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-[#E5E7EB]" />
+                <span className="text-[12px] font-semibold text-[#0B0C19]">
+              Checking for updates…
+            </span>
+              </div>
+              <span className="text-[11px] text-[#6B7280]">Linux</span>
+            </div>
+        )}
+
+        {/* Error state (Linux only) */}
+        {isLinux && updateCheckState === "error" && (
+            <div className="bg-white rounded-[24px] p-[18px] border border-[#FFE4E6] flex items-center justify-between">
+              <div>
+                <div className="text-[12px] font-semibold text-[#0B0C19]">
+                  Couldn’t check for updates
+                </div>
+                <div className="text-[11px] text-[#6B7280]">
+                  Please check your connection or verify latest.json is reachable.
+                </div>
+              </div>
+              <button
+                  type="button"
+                  onClick={() => window.location.reload()}
+                  className="text-[12px] font-semibold text-[#62626A] bg-[#F6F6FD] uppercase hover:opacity-80 px-[10px] py-[6px] rounded-[20px]"
+              >
+                Retry
+              </button>
+            </div>
+        )}
+
+        {/* Apple-like update card (Linux only, only shows when update exists) */}
+        {isLinux && updateCheckState === "ready" && updateAvailable && (
+            <div className="bg-white rounded-[24px] p-[22px] h-auto border border-[#E5E7EB]">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 mb-[10px]">
+                    <div className="w-2 h-2 rounded-full bg-[#60D38E]" />
+                    <h3 className="text-sm font-semibold text-[#0B0C19]">
+                      Update available
                     </h3>
+                    <span className="text-[10px] font-bold uppercase px-2 py-[3px] rounded-full bg-[#ECFDF3] text-[#16A34A] border border-[#BBF7D0]">
+                  New version
+                </span>
                   </div>
-                  <p className="text-xs text-[#6B7280]">
-                    Run this command in your terminal to download and install the
-                    latest .deb (VPN-style).
+
+                  <p className="text-[12px] text-[#62626A] mb-2">
+                    A newer Stellar Antivirus release is ready for Linux.
                   </p>
+
+                  <div className="flex flex-wrap items-center gap-2 mb-3">
+                <span className="text-[11px] text-[#6B7280] bg-[#F6F6FD] border border-[#E5E7EB] px-2 py-1 rounded-full">
+                  Current:{" "}
+                  <span className="font-semibold text-[#0B0C19]">
+                    {currentVersion ?? "unknown"}
+                  </span>
+                </span>
+                    <span className="text-[11px] text-[#6B7280] bg-[#F6F6FD] border border-[#E5E7EB] px-2 py-1 rounded-full">
+                  Latest:{" "}
+                      <span className="font-semibold text-[#0B0C19]">
+                    {latestVersion ?? "unknown"}
+                  </span>
+                </span>
+                  </div>
+
+                  {latestNotes && (
+                      <div className="text-[11px] text-[#6B7280] mb-3">
+                        <span className="font-semibold text-[#0B0C19]">What’s new:</span>{" "}
+                        {latestNotes}
+                      </div>
+                  )}
                 </div>
 
-                <button
-                    type="button"
-                    onClick={onCopyLinuxCommand}
-                    className="text-[12px] font-semibold text-[#62626A] bg-[#F6F6FD] uppercase hover:opacity-80 px-[8px] py-[6px] rounded-[20px] h-auto"
-                >
-                  Copy
-                </button>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                      type="button"
+                      onClick={onCopyLinuxCommand}
+                      className="text-[12px] font-semibold text-white bg-[#2563EB] hover:opacity-90 px-[12px] py-[8px] rounded-[14px]"
+                  >
+                    Copy command
+                  </button>
+                </div>
               </div>
 
-              <div className="bg-[#0B0C19] text-white rounded-[18px] px-4 py-3 overflow-x-auto">
+              <div className="mt-3 bg-[#0B0C19] text-white rounded-[18px] px-4 py-3 overflow-x-auto">
             <pre className="text-[11px] leading-5 whitespace-pre-wrap break-words">
               {linuxUpdateCommand}
             </pre>
               </div>
 
               <p className="text-[11px] text-[#6B7280] mt-2">
-                Requires: curl + python3 + sudo access (apt). Installer is fetched
-                from{" "}
-                <span className="font-semibold">
-              desktopreleasesassetsprod.stellarsecurity.com
-            </span>
-                .
+                Requires: curl + python3 + sudo access (apt). Package comes from{" "}
+                <span className="font-semibold">desktopreleasesassetsprod.stellarsecurity.com</span>.
               </p>
+            </div>
+        )}
+
+        {/* Up-to-date state (Linux only) */}
+        {isLinux && updateCheckState === "ready" && !updateAvailable && (
+            <div className="bg-white rounded-[24px] p-[18px] border border-[#E5E7EB] flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-[#2563EB]" />
+                <span className="text-[12px] font-semibold text-[#0B0C19]">
+              You’re up to date
+            </span>
+                <span className="text-[11px] text-[#6B7280]">
+              {currentVersion ? `v${currentVersion}` : ""}
+            </span>
+              </div>
+
+              <button
+                  type="button"
+                  onClick={onCopyLinuxCommand}
+                  className="text-[12px] font-semibold text-[#62626A] bg-[#F6F6FD] uppercase hover:opacity-80 px-[10px] py-[6px] rounded-[20px]"
+                  title="Copy the manual update command (advanced)"
+              >
+                Copy
+              </button>
             </div>
         )}
 
@@ -427,18 +567,12 @@ const DashboardScreen: React.FC<Props> = ({
           <div className="flex items-center justify-between mb-[12px]">
             <div>
               <div className="flex items-center gap-2 mb-[12px]">
-                <img
-                    src="/dashboard/recent-activity.svg"
-                    alt=""
-                    className="w-4 h-4"
-                />
+                <img src="/dashboard/recent-activity.svg" alt="" className="w-4 h-4" />
                 <h3 className="text-sm font-semibold text-[#2761FC] uppercase">
                   Recent activity
                 </h3>
               </div>
-              <p className="text-xs text-[#6B7280]">
-                A quick view of your latest scans.
-              </p>
+              <p className="text-xs text-[#6B7280]">A quick view of your latest scans.</p>
             </div>
 
             <button
@@ -465,9 +599,7 @@ const DashboardScreen: React.FC<Props> = ({
                   const isThreatFound = log.result === "threats_found";
                   const isRealtime = log.scan_type === "realtime";
                   const isThreatRemoved =
-                      (log.details || "")
-                          .toLowerCase()
-                          .includes("moved to quarantine") ||
+                      (log.details || "").toLowerCase().includes("moved to quarantine") ||
                       (log.details || "").toLowerCase().includes("removed");
 
                   const GRADIENTS = {
@@ -502,14 +634,11 @@ const DashboardScreen: React.FC<Props> = ({
                           style={{ background }}
                       >
                   <span className="text-[12px] font-medium">
-                    {log.details ||
-                        (isRealtime ? "Real-time protection" : "Full scan")}
+                    {log.details || (isRealtime ? "Real-time protection" : "Full scan")}
                   </span>
 
                         <div className="flex items-center gap-2 text-[12px] opacity-90 font-semibold text-[#62626A]">
-                    <span className="font-[400]">
-                      {log.timestamp.replace(" ", " — ")}
-                    </span>
+                          <span className="font-[400]">{log.timestamp.replace(" ", " — ")}</span>
                           <span className="opacity-60">•</span>
                           <span className="font-[400]">
                       {isRealtime ? "Real-time protection" : "Full scan"}
