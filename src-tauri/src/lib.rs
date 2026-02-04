@@ -1115,7 +1115,9 @@ pub fn run() {
             MacosLauncher::LaunchAgent,
             Some(vec![AUTOSTART_ARG.into()]),
         ))
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             fake_full_scan,
             quick_scan,
@@ -1170,6 +1172,7 @@ pub fn run() {
         }
 
         // Clicking Dock icon / reopening should bring it back (also re-adds Dock icon)
+        #[cfg(target_os = "macos")]
         RunEvent::Reopen { .. } => {
             show_main_window(app_handle);
         }

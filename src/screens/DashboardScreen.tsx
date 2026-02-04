@@ -87,6 +87,29 @@ const DashboardScreen: React.FC<Props> = ({
               ? "You can keep using your Mac or PC while the scan runs. We'll notify you here if any threats are found."
               : "Run a Quick scan for common locations, or Full scan for a deeper check.";
 
+  // --- Linux update command (VPN-style) ---
+  const isLinux =
+      typeof navigator !== "undefined" &&
+      /Linux/i.test(navigator.userAgent) &&
+      !/Android/i.test(navigator.userAgent);
+
+  const linuxUpdateCommand = `curl -fsSL https://desktopreleasesassetsprod.stellarsecurity.com/antivirus/latest.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['platforms']['linux-x86_64']['url'])" | xargs -I{} sh -lc 'set -e; TMP=$(mktemp -d); curl -fL \"{}\" -o \"$TMP/stellar-antivirus.deb\"; sudo apt-get update -y >/dev/null; sudo apt-get install -y \"$TMP/stellar-antivirus.deb\"'`;
+
+  const onCopyLinuxCommand = async () => {
+    try {
+      await navigator.clipboard.writeText(linuxUpdateCommand);
+    } catch {
+      const el = document.createElement("textarea");
+      el.value = linuxUpdateCommand;
+      el.style.position = "fixed";
+      el.style.left = "-9999px";
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand("copy");
+      document.body.removeChild(el);
+    }
+  };
+
   return (
       <div className="h-full flex flex-col gap-6">
         <div className="grid grid-cols-2 gap-6">
@@ -100,13 +123,16 @@ const DashboardScreen: React.FC<Props> = ({
                 Live file monitoring
               </h2>
               <p className="text-[12px] font-normal text-[#62626A]">
-                Scans new and modified files in real time to block threats before they spread.
+                Scans new and modified files in real time to block threats before
+                they spread.
               </p>
             </div>
 
             <div className="mt-6 flex items-center justify-between">
               <div className="flex flex-col">
-                <span className="text-[10px] font-normal text-[#62626A]">Status</span>
+              <span className="text-[10px] font-normal text-[#62626A]">
+                Status
+              </span>
                 <span
                     className={`text-[14px] font-semibold ${
                         realtimeEnabled ? "text-[#2761FC]" : "text-[#111827]"
@@ -116,7 +142,11 @@ const DashboardScreen: React.FC<Props> = ({
               </span>
               </div>
 
-              <Toggle enabled={realtimeEnabled} onChange={onToggleRealtime} disabled={isScanning} />
+              <Toggle
+                  enabled={realtimeEnabled}
+                  onChange={onToggleRealtime}
+                  disabled={isScanning}
+              />
             </div>
           </div>
 
@@ -125,7 +155,11 @@ const DashboardScreen: React.FC<Props> = ({
             <div>
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
-                  <img src="/dashboard/dashboard.svg" alt="" className="w-4 h-4" />
+                  <img
+                      src="/dashboard/dashboard.svg"
+                      alt=""
+                      className="w-4 h-4"
+                  />
                   <span className="text-[14px] font-semibold text-white">
                   FULL DISK SCAN
                 </span>
@@ -170,14 +204,28 @@ const DashboardScreen: React.FC<Props> = ({
                         fill="none"
                         xmlns="http://www.w3.org/2000/svg"
                     >
-                      <g stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                      <g
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          strokeLinecap="round"
+                      >
                         <line x1="8" y1="2" x2="8" y2="4" />
                         <line x1="8" y1="12" x2="8" y2="14" />
                         <line x1="2" y1="8" x2="4" y2="8" />
                         <line x1="12" y1="8" x2="14" y2="8" />
                         <line x1="4.343" y1="4.343" x2="5.657" y2="5.657" />
-                        <line x1="10.343" y1="10.343" x2="11.657" y2="11.657" />
-                        <line x1="4.343" y1="11.657" x2="5.657" y2="10.343" />
+                        <line
+                            x1="10.343"
+                            y1="10.343"
+                            x2="11.657"
+                            y2="11.657"
+                        />
+                        <line
+                            x1="4.343"
+                            y1="11.657"
+                            x2="5.657"
+                            y2="10.343"
+                        />
                         <line x1="10.343" y1="5.657" x2="11.657" y2="4.343" />
                       </g>
                     </svg>
@@ -206,7 +254,9 @@ const DashboardScreen: React.FC<Props> = ({
                 Status:
               </span>
                 <div className="flex items-center gap-1">
-                  <span className="text-[14px] font-semibold text-white">Latest scan -</span>
+                <span className="text-[14px] font-semibold text-white">
+                  Latest scan -
+                </span>
                   {lastScan ? (
                       <span className="text-[14px] font-semibold text-white">
                     {lastScan.timestamp}
@@ -287,12 +337,13 @@ const DashboardScreen: React.FC<Props> = ({
             <div className="mb-2">
               <div className="bg-[#4578FF] rounded-full px-[22px] py-[7px] flex items-center gap-7 h-[30px]">
                 <div className="flex-1 h-1 rounded-full bg-white overflow-hidden">
-                  {(isScanning || isCompletionHold || isFinalizing) && hasProgress && (
-                      <div
-                          className="h-full bg-black transition-all duration-200"
-                          style={{ width: `${progressDisplay || 0}%` }}
-                      />
-                  )}
+                  {(isScanning || isCompletionHold || isFinalizing) &&
+                      hasProgress && (
+                          <div
+                              className="h-full bg-black transition-all duration-200"
+                              style={{ width: `${progressDisplay || 0}%` }}
+                          />
+                      )}
                 </div>
 
                 {(isScanning || isCompletionHold || isFinalizing) && hasProgress && (
@@ -324,12 +375,63 @@ const DashboardScreen: React.FC<Props> = ({
           </div>
         </div>
 
+        {/* Linux update command card (VPN-style) */}
+        {isLinux && (
+            <div className="bg-white rounded-[24px] p-[22px] h-auto">
+              <div className="flex items-center justify-between mb-[12px]">
+                <div>
+                  <div className="flex items-center gap-2 mb-[12px]">
+                    <img
+                        src="/dashboard/recent-activity.svg"
+                        alt=""
+                        className="w-4 h-4"
+                    />
+                    <h3 className="text-sm font-semibold text-[#2761FC] uppercase">
+                      Update on Linux
+                    </h3>
+                  </div>
+                  <p className="text-xs text-[#6B7280]">
+                    Run this command in your terminal to download and install the
+                    latest .deb (VPN-style).
+                  </p>
+                </div>
+
+                <button
+                    type="button"
+                    onClick={onCopyLinuxCommand}
+                    className="text-[12px] font-semibold text-[#62626A] bg-[#F6F6FD] uppercase hover:opacity-80 px-[8px] py-[6px] rounded-[20px] h-auto"
+                >
+                  Copy
+                </button>
+              </div>
+
+              <div className="bg-[#0B0C19] text-white rounded-[18px] px-4 py-3 overflow-x-auto">
+            <pre className="text-[11px] leading-5 whitespace-pre-wrap break-words">
+              {linuxUpdateCommand}
+            </pre>
+              </div>
+
+              <p className="text-[11px] text-[#6B7280] mt-2">
+                Requires: curl + python3 + sudo access (apt). Installer is fetched
+                from{" "}
+                <span className="font-semibold">
+              desktopreleasesassetsprod.stellarsecurity.com
+            </span>
+                .
+              </p>
+            </div>
+        )}
+
         {/* Recent activity */}
         <div className="bg-white rounded-[24px] p-[22px] h-auto">
           <div className="flex items-center justify-between mb-[12px]">
             <div>
               <div className="flex items-center gap-2 mb-[12px]">
-                <img src="/dashboard/recent-activity.svg" alt="" className="w-4 h-4" />
+                <img
+                    src="/dashboard/recent-activity.svg"
+                    alt=""
+                    className="w-4 h-4"
+                />
                 <h3 className="text-sm font-semibold text-[#2761FC] uppercase">
                   Recent activity
                 </h3>
@@ -363,7 +465,9 @@ const DashboardScreen: React.FC<Props> = ({
                   const isThreatFound = log.result === "threats_found";
                   const isRealtime = log.scan_type === "realtime";
                   const isThreatRemoved =
-                      (log.details || "").toLowerCase().includes("moved to quarantine") ||
+                      (log.details || "")
+                          .toLowerCase()
+                          .includes("moved to quarantine") ||
                       (log.details || "").toLowerCase().includes("removed");
 
                   const GRADIENTS = {
@@ -398,11 +502,14 @@ const DashboardScreen: React.FC<Props> = ({
                           style={{ background }}
                       >
                   <span className="text-[12px] font-medium">
-                    {log.details || (isRealtime ? "Real-time protection" : "Full scan")}
+                    {log.details ||
+                        (isRealtime ? "Real-time protection" : "Full scan")}
                   </span>
 
                         <div className="flex items-center gap-2 text-[12px] opacity-90 font-semibold text-[#62626A]">
-                          <span className="font-[400]">{log.timestamp.replace(" ", " — ")}</span>
+                    <span className="font-[400]">
+                      {log.timestamp.replace(" ", " — ")}
+                    </span>
                           <span className="opacity-60">•</span>
                           <span className="font-[400]">
                       {isRealtime ? "Real-time protection" : "Full scan"}

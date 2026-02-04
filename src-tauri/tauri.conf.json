@@ -1,8 +1,8 @@
 {
-  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "$schema": "https://schema.tauri.app/config/2",
   "productName": "Stellar Antivirus",
   "version": "0.1.0",
-  "identifier": "stellar.antivirus.app",
+  "identifier": "org.stellarsecurity.antivirus.desktop",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:3000",
@@ -16,8 +16,7 @@
         "width": 1200,
         "height": 720,
         "resizable": false,
-        "fullscreen": false,
-        "devtools": true
+        "fullscreen": false
       }
     ],
     "security": {
@@ -26,7 +25,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["dmg", "app"],
+    "targets": "all",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -34,13 +33,14 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "macOS": {
-      "minimumSystemVersion": "11.0",
-      "dmg": {
-        "windowSize": { "width": 660, "height": 400 },
-        "appPosition": { "x": 180, "y": 170 },
-        "applicationFolderPosition": { "x": 480, "y": 170 }
-      }
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU2OEQ5NkQyQzc1QUMxNzAKUldSd3dWckgwcGFONXNQem5wZWpDaGRTU2V3TXNjbGNwd2Y1QTZBZFdYWmFJd1RtbGtITWZUM0kK",
+      "endpoints": [
+        "https://desktopreleasesassetsprod.stellarsecurity.com/antivirus/latest.json"
+      ]
     }
   }
 }
