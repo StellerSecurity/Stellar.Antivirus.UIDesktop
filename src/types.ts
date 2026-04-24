@@ -31,6 +31,7 @@ export interface Threat {
 export interface QuarantineEntry {
   id: number;
   fileName: string;
+  quarantineFileName?: string;
   originalPath: string;
   quarantinedAt: string;
   detection: string;
