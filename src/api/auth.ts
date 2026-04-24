@@ -2,23 +2,22 @@
 
 import { http } from "./http";
 
-// User object shape from backend
 export interface ApiUser {
     id: number;
     name: string;
-    email: string | null; // Can be null from API
-    role: number;
-    vpn_sdk?: number; // Optional fields that may not be present
-    crypto_version?: string; // Optional fields that may not be present
+    email: string | null;
+    role?: number;
+    token?: string;
+    vpn_sdk?: number;
+    crypto_version?: string;
 }
 
-// FULL response from backend (this is what you were missing)
 export interface ApiEnvelope {
     response_code: number;
     response_message: string;
-    user: ApiUser;
-    token: string;
-    subscription_id?: string;
+    user?: ApiUser;
+    token?: string;
+    subscription_id?: string | number;
 }
 
 export interface LoginPayload {
@@ -31,7 +30,6 @@ export interface RegisterPayload {
     password: string;
 }
 
-// --- LOGIN ---
 export function login(payload: LoginPayload) {
     return http.post<ApiEnvelope>(
         "/api/v1/logincontroller/login",
@@ -40,7 +38,6 @@ export function login(payload: LoginPayload) {
     );
 }
 
-// --- REGISTER ---
 export function register(payload: RegisterPayload) {
     return http.post<ApiEnvelope>(
         "/api/v1/logincontroller/register",

@@ -11,9 +11,9 @@ interface LoginScreenProps {
 }
 
 const LoginScreen: React.FC<LoginScreenProps> = ({
-  onAuthenticated,
-  onGoToRegister,
-}) => {
+                                                   onAuthenticated,
+                                                   onGoToRegister,
+                                                 }) => {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -25,32 +25,33 @@ const LoginScreen: React.FC<LoginScreenProps> = ({
     setLoading(true);
 
     try {
-      // login() is typed in auth.ts to return ApiEnvelope
       const res = await login({ username, password });
 
-      // Check response_code === 200 before storing
       if (res.response_code !== 200) {
         throw new Error(res.response_message || "Login failed");
       }
 
-      if (!res.token) {
+      const token = res.token ?? res.user?.token;
+
+      if (!token) {
         throw new Error("No token returned from server");
       }
 
-      // Store user and subscription locally (optional but useful)
       if (typeof window !== "undefined") {
         window.localStorage.setItem("stellar_user", JSON.stringify(res.user));
+
         if (res.subscription_id) {
           window.localStorage.setItem(
-            "stellar_subscription_id",
-            res.subscription_id
+              "stellar_subscription_id",
+              String(res.subscription_id)
           );
         }
       }
 
-      onAuthenticated?.(res.token);
+      onAuthenticated?.(token);
     } catch (err: any) {
       console.error(err);
+
       if (err?.response?.response_message) {
         setError(err.response.response_message);
       } else if (err?.message) {
@@ -64,99 +65,102 @@ const LoginScreen: React.FC<LoginScreenProps> = ({
   };
 
   return (
-    <div className="h-full flex items-center justify-center relative">
-      <div className="flex items-center justify-center p-[90px] gap-5">
-        <div className="image">
-          <img src="/App.png" alt="Login" />
-        </div>
-        <div className="w-[420px]">
-          {/* Subtitle */}
-          <div className="flex items-center gap-2 mb-3">
-            <img
-              src="/reala-time-protection.svg"
-              alt=""
-              className="w-[15px] h-[19px]"
-            />
-            <span className="text-white text-sm font-semibold uppercase tracking-wide">
-              REAL-TIME PROTECTION
-            </span>
+      <div className="h-full flex items-center justify-center relative">
+        <div className="flex items-center justify-center p-[90px] gap-5">
+          <div className="image">
+            <img src="/App.png" alt="Login" />
           </div>
 
-          <h1 className="text-[30px] font-semibold font-poppins text-white mb-1">
-            3. Log in to Stellar Antivirus
-          </h1>
-          <p className="text-[16px] text-[#CFCFFF] font-semibold mb-6 mt-2">
-            Use your Stellar ID email to continue.
-          </p>
-
-          <form onSubmit={handleSubmit} className="">
-            <div className="space-y-4">
-              <Input
-                label="STELLAR ID EMAIL"
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                autoComplete="username"
-                placeholder="Your email"
-                required
-                labelClassName="!text-[#CFCFFF]"
+          <div className="w-[420px]">
+            <div className="flex items-center gap-2 mb-3">
+              <img
+                  src="/reala-time-protection.svg"
+                  alt=""
+                  className="w-[15px] h-[19px]"
               />
-
-              <Input
-                label="PASSWORD"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete="current-password"
-                placeholder="Your password"
-                required
-                labelClassName="!text-[#CFCFFF]"
-              />
-
-              {error && (
-                <div className="text-[12px] text-red-600 bg-red-50 border border-red-100 rounded-xl px-3 py-2">
-                  {error}
-                </div>
-              )}
+              <span className="text-white text-sm font-semibold uppercase tracking-wide">
+              REAL-TIME PROTECTION
+            </span>
             </div>
 
-            <div className="flex items-center justify-between mt-6">
-              <Button type="submit" disabled={loading}>
-                {loading ? "Logging in..." : "LOG IN"}
-              </Button>
-              <button
-                type="button"
-                className="text-[#62626A] text-[12px] font-semibold uppercase bg-[#F6F6FD] px-4 py-2 rounded-full hover:opacity-90"
-              >
-                FORGOT PASSWORD?
-              </button>
-            </div>
-          </form>
+            <h1 className="text-[30px] font-semibold font-poppins text-white mb-1">
+              3. Log in to Stellar Antivirus
+            </h1>
+
+            <p className="text-[16px] text-[#CFCFFF] font-semibold mb-6 mt-2">
+              Use your Stellar ID email to continue.
+            </p>
+
+            <form onSubmit={handleSubmit} className="">
+              <div className="space-y-4">
+                <Input
+                    label="STELLAR ID EMAIL"
+                    type="text"
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    autoComplete="username"
+                    placeholder="Your email"
+                    required
+                    labelClassName="!text-[#CFCFFF]"
+                />
+
+                <Input
+                    label="PASSWORD"
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    autoComplete="current-password"
+                    placeholder="Your password"
+                    required
+                    labelClassName="!text-[#CFCFFF]"
+                />
+
+                {error && (
+                    <div className="text-[12px] text-red-600 bg-red-50 border border-red-100 rounded-xl px-3 py-2">
+                      {error}
+                    </div>
+                )}
+              </div>
+
+              <div className="flex items-center justify-between mt-6">
+                <Button type="submit" disabled={loading}>
+                  {loading ? "Logging in..." : "LOG IN"}
+                </Button>
+
+                <button
+                    type="button"
+                    className="text-[#62626A] text-[12px] font-semibold uppercase bg-[#F6F6FD] px-4 py-2 rounded-full hover:opacity-90"
+                >
+                  FORGOT PASSWORD?
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+
+        <div className="absolute bottom-8 left-8 flex items-center gap-2">
+          {[1, 2, 3, 4, 5].map((stepNum) => (
+              <div
+                  key={stepNum}
+                  className={`h-1 w-[63px] rounded ${
+                      stepNum === 3 ? "bg-primary" : "bg-white/30"
+                  }`}
+              />
+          ))}
+        </div>
+
+        <div className="absolute bottom-8 right-8">
+          <Button
+              type="button"
+              onClick={() => {
+                setError(null);
+                onGoToRegister?.();
+              }}
+          >
+            CREATE STELLAR ID
+          </Button>
         </div>
       </div>
-
-      {/* Progress Indicator - Absolute bottom left */}
-      <div className="absolute bottom-8 left-8 flex items-center gap-2">
-        {[1, 2, 3, 4, 5].map((stepNum) => (
-          <div
-            key={stepNum}
-            className={`h-1 w-[63px] rounded ${
-              stepNum === 3 ? "bg-primary" : "bg-white/30"
-            }`}
-          />
-        ))}
-      </div>
-
-      {/* CREATE STELLAR ID Button - Absolute bottom right */}
-      <div className="absolute bottom-8 right-8">
-        <Button type="button" onClick={() => {
-          setError(null);
-          onGoToRegister?.();
-        }}>
-          CREATE STELLAR ID
-        </Button>
-      </div>
-    </div>
   );
 };
 
