@@ -2,7 +2,7 @@ export type ProtectionStatus = "protected" | "not_protected" | "scanning" | "at_
 
 export type ScanType = "realtime" | "full_scan";
 
-export type ScanResult = "clean" | "threats_found";
+export type ScanResult = "clean" | "threats_found" | "failed";
 
 export interface ScanLogEntry {
   id: number;

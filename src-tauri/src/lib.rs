@@ -7,7 +7,7 @@ use std::{
         mpsc,
     },
     thread,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -15,6 +15,7 @@ use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{
+    image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
     tray::TrayIconBuilder,
     AppHandle, Emitter, Manager, RunEvent, WindowEvent,
@@ -120,6 +121,12 @@ struct RestoreItem {
     file_name: String,
     #[serde(rename = "originalPath", alias = "original_path")]
     original_path: String,
+}
+
+#[derive(Serialize)]
+struct QuarantineResult {
+    original_path: String,
+    quarantine_file_name: String,
 }
 
 // ---- API structs ----
@@ -414,8 +421,6 @@ fn run_hash_lookup_scan(
         Ok(r) => r,
         Err(e) => {
             eprintln!("[SCAN] {} API error: {}", notification_label, e);
-
-            let _ = app.emit("scan_finished", ScanFinishedPayload { threats: vec![] });
 
             let _ = app
                 .notification()
@@ -741,27 +746,40 @@ fn validate_quarantine_name(name: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn quarantine_files(paths: Vec<String>) -> Result<(), String> {
+async fn quarantine_files(paths: Vec<String>) -> Result<Vec<QuarantineResult>, String> {
     let qdir = quarantine_root();
 
     fs::create_dir_all(&qdir)
         .map_err(|e| format!("Failed to create quarantine directory: {e}"))?;
 
+    let mut results: Vec<QuarantineResult> = Vec::new();
+
     for original in paths {
         let src = PathBuf::from(&original);
 
-        if !src.exists() {
-            eprintln!("File does not exist, skipping: {original}");
+        if !src.exists() || !src.is_file() {
+            eprintln!("File does not exist or is not a file, skipping: {original}");
             continue;
         }
 
-        let fname = src
+        let original_name = src
             .file_name()
-            .unwrap_or_else(|| std::ffi::OsStr::new("unknown"));
-        let dest = qdir.join(fname);
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+        let hash_prefix = sha256_of_file(&src)
+            .map(|h| h.chars().take(16).collect::<String>())
+            .unwrap_or_else(|| {
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_millis().to_string())
+                    .unwrap_or_else(|_| "unknown".to_string())
+            });
+        let quarantine_file_name = format!("{}__{}", hash_prefix, original_name);
+        validate_quarantine_name(&quarantine_file_name)?;
+        let dest = qdir.join(&quarantine_file_name);
 
         if dest.exists() {
-            let _ = fs::remove_file(&dest);
+            return Err(format!("Quarantine destination already exists: {quarantine_file_name}"));
         }
 
         if let Err(e) = fs::rename(&src, &dest) {
@@ -772,9 +790,13 @@ async fn quarantine_files(paths: Vec<String>) -> Result<(), String> {
         }
 
         println!("Quarantined file: {src:?} -> {dest:?}");
+        results.push(QuarantineResult {
+            original_path: original,
+            quarantine_file_name,
+        });
     }
 
-    Ok(())
+    Ok(results)
 }
 
 #[tauri::command]
@@ -855,7 +877,9 @@ async fn delete_files(paths: Vec<String>) -> Result<(), String> {
     let qdir = quarantine_root();
 
     for original in paths {
-        let fname = Path::new(&original).file_name().unwrap().to_os_string();
+        let Some(fname) = Path::new(&original).file_name().map(|f| f.to_os_string()) else {
+            continue;
+        };
         let qpath = qdir.join(fname);
 
         if qpath.exists() {
@@ -1008,7 +1032,7 @@ fn start_realtime_watcher(app_handle: AppHandle) {
                     .notification()
                     .builder()
                     .title("Stellar Antivirus")
-                    .body(format!("Real-time protection blocked: {}", file))
+                    .body(format!("Real-time protection detected: {}", file))
                     .show();
             }
         }
@@ -1079,10 +1103,7 @@ fn init_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .items(&[&open_i, &hide_i, &quit_i])
         .build()?;
 
-    let icon = app
-        .default_window_icon()
-        .cloned()
-        .expect("Missing default window icon for tray");
+    let icon = Image::new(include_bytes!("../icons/tray-icon.rgba"), 32, 32);
 
     TrayIconBuilder::new()
         .menu(&menu)
@@ -1149,9 +1170,12 @@ pub fn run() {
             let handle = app.handle().clone();
             start_realtime_watcher(handle);
 
-            // If launched by autostart, boot silently (hidden + no Dock icon on macOS)
+            // The window is configured as hidden by default.
+            // Manual launches open the UI; autostart launches stay in the background.
             if is_autostart {
                 hide_main_window(app.handle());
+            } else {
+                show_main_window(app.handle());
             }
 
             Ok(())

@@ -1,5 +1,7 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import type { ProtectionStatus, ScanLogEntry } from "../types";
 import Button from "../components/Button";
 import Spinner from "../components/Spinner";
@@ -23,15 +25,8 @@ interface Props {
   scanProgress: ScanProgress;
 }
 
-type LatestJson = {
-  version?: string;
-  notes?: string;
-  pub_date?: string;
-  platforms?: Record<string, { url?: string; signature?: string }>;
-};
-
-const LATEST_JSON_URL =
-    "https://desktopreleasesassetsprod.stellarsecurity.com/antivirus/latest.json";
+const OTA_LAST_CHECK_KEY = "stellar_antivirus_ota_last_check";
+const OTA_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 const DashboardScreen: React.FC<Props> = ({
                                             status,
@@ -98,76 +93,40 @@ const DashboardScreen: React.FC<Props> = ({
               ? "You can keep using your Mac or PC while the scan runs. We'll notify you here if any threats are found."
               : "Run a Quick scan for common locations, or Full scan for a deeper check.";
 
-  // --- Linux update command (VPN-style) ---
-  const isLinux =
-      typeof navigator !== "undefined" &&
-      /Linux/i.test(navigator.userAgent) &&
-      !/Android/i.test(navigator.userAgent);
-
-  // VPN-style: latest.json -> platforms.linux-x86_64.url -> apt install
-  const linuxUpdateCommand = useMemo(() => {
-    return `curl -fsSL ${LATEST_JSON_URL} | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['platforms']['linux-x86_64']['url'])" | xargs -I{} sh -lc 'set -e; TMP=$(mktemp -d); curl -fL \"{}\" -o \"$TMP/stellar-antivirus.deb\"; sudo apt-get update -y >/dev/null; sudo apt-get install -y \"$TMP/stellar-antivirus.deb\"'`;
-  }, []);
-
-  const onCopyLinuxCommand = async () => {
-    try {
-      await navigator.clipboard.writeText(linuxUpdateCommand);
-    } catch {
-      const el = document.createElement("textarea");
-      el.value = linuxUpdateCommand;
-      el.style.position = "fixed";
-      el.style.left = "-9999px";
-      document.body.appendChild(el);
-      el.select();
-      document.execCommand("copy");
-      document.body.removeChild(el);
-    }
-  };
-
-  // --- Apple-like update availability UI (Linux only) ---
+  // --- OTA update flow ---
   const [updateCheckState, setUpdateCheckState] = useState<
-      "idle" | "checking" | "ready" | "error"
+      "idle" | "available" | "installing" | "installed" | "error"
   >("idle");
   const [currentVersion, setCurrentVersion] = useState<string | null>(null);
   const [latestVersion, setLatestVersion] = useState<string | null>(null);
   const [latestNotes, setLatestNotes] = useState<string | null>(null);
+  const [availableUpdate, setAvailableUpdate] = useState<any>(null);
+
+  const isTauri =
+      typeof window !== "undefined" && !!(window as any).__TAURI_INTERNALS__;
 
   const normalizeVersion = (v: string) =>
       v.trim().replace(/^v/i, "").split("+")[0].split("-")[0];
 
-  const compareSemver = (aRaw: string, bRaw: string) => {
-    // returns: -1 if a<b, 0 if equal, 1 if a>b
-    const a = normalizeVersion(aRaw);
-    const b = normalizeVersion(bRaw);
-
-    const pa = a.split(".").map((x) => parseInt(x, 10));
-    const pb = b.split(".").map((x) => parseInt(x, 10));
-
-    for (let i = 0; i < 3; i++) {
-      const da = Number.isFinite(pa[i]) ? pa[i] : 0;
-      const db = Number.isFinite(pb[i]) ? pb[i] : 0;
-      if (da > db) return 1;
-      if (da < db) return -1;
-    }
-    return 0;
-  };
-
-  const updateAvailable = useMemo(() => {
-    if (!isLinux) return false;
-    if (!currentVersion || !latestVersion) return false;
-    return compareSemver(currentVersion, latestVersion) < 0;
-  }, [isLinux, currentVersion, latestVersion]);
-
   useEffect(() => {
-    if (!isLinux) return;
+    if (!isTauri) return;
 
     let cancelled = false;
 
-    const run = async () => {
-      try {
-        setUpdateCheckState("checking");
+    const shouldCheckToday = () => {
+      if (typeof window === "undefined") return false;
 
-        // Current version from Tauri
+      const raw = window.localStorage.getItem(OTA_LAST_CHECK_KEY);
+      const lastCheck = raw ? Number(raw) : 0;
+
+      if (!Number.isFinite(lastCheck) || lastCheck <= 0) return true;
+      return Date.now() - lastCheck >= OTA_CHECK_INTERVAL_MS;
+    };
+
+    const runDailyUpdateCheck = async () => {
+      if (!shouldCheckToday()) return;
+
+      try {
         let ver: string | null = null;
         try {
           ver = await getVersion();
@@ -177,36 +136,44 @@ const DashboardScreen: React.FC<Props> = ({
 
         if (!cancelled) setCurrentVersion(ver ? normalizeVersion(ver) : null);
 
-        const res = await fetch(LATEST_JSON_URL, { cache: "no-store" });
-        if (!res.ok) throw new Error(`latest.json HTTP ${res.status}`);
-        const json = (await res.json()) as LatestJson;
+        const update = await check();
 
-        const lv = typeof json.version === "string" ? json.version : null;
-        const ln = typeof json.notes === "string" ? json.notes : null;
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem(OTA_LAST_CHECK_KEY, String(Date.now()));
+        }
 
-        if (!cancelled) {
-          setLatestVersion(lv ? normalizeVersion(lv) : null);
-          setLatestNotes(ln);
-          setUpdateCheckState("ready");
+        if (cancelled) return;
+
+        if (update) {
+          setAvailableUpdate(update);
+          setLatestVersion(update.version ? normalizeVersion(update.version) : null);
+          setLatestNotes(typeof update.body === "string" ? update.body : null);
+          setUpdateCheckState("available");
         }
       } catch {
-        if (!cancelled) setUpdateCheckState("error");
+        if (!cancelled) setUpdateCheckState("idle");
       }
     };
 
-    run();
+    runDailyUpdateCheck();
 
     return () => {
       cancelled = true;
     };
-  }, [isLinux]);
+  }, [isTauri]);
 
-  // Debug: keep for now while you validate
-  // console.log("[UPDATE] isLinux", isLinux);
-  // console.log("[UPDATE] currentVersion", currentVersion);
-  // console.log("[UPDATE] latestVersion", latestVersion);
-  // console.log("[UPDATE] state", updateCheckState);
-  // console.log("[UPDATE] available", updateAvailable);
+  const onInstallUpdate = async () => {
+    if (!availableUpdate) return;
+
+    try {
+      setUpdateCheckState("installing");
+      await availableUpdate.downloadAndInstall();
+      setUpdateCheckState("installed");
+      await relaunch();
+    } catch {
+      setUpdateCheckState("error");
+    }
+  };
 
   return (
       <div className="h-full flex flex-col gap-6">
@@ -438,42 +405,11 @@ const DashboardScreen: React.FC<Props> = ({
           </div>
         </div>
 
-        {/* Checking state (Linux only) */}
-        {isLinux && updateCheckState === "checking" && (
-            <div className="bg-white rounded-[24px] p-[18px] border border-[#E5E7EB] flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="w-2 h-2 rounded-full bg-[#E5E7EB]" />
-                <span className="text-[12px] font-semibold text-[#0B0C19]">
-              Checking for updates…
-            </span>
-              </div>
-              <span className="text-[11px] text-[#6B7280]">Linux</span>
-            </div>
-        )}
-
-        {/* Error state (Linux only) */}
-        {isLinux && updateCheckState === "error" && (
-            <div className="bg-white rounded-[24px] p-[18px] border border-[#FFE4E6] flex items-center justify-between">
-              <div>
-                <div className="text-[12px] font-semibold text-[#0B0C19]">
-                  Couldn’t check for updates
-                </div>
-                <div className="text-[11px] text-[#6B7280]">
-                  Please check your connection or verify latest.json is reachable.
-                </div>
-              </div>
-              <button
-                  type="button"
-                  onClick={() => window.location.reload()}
-                  className="text-[12px] font-semibold text-[#62626A] bg-[#F6F6FD] uppercase hover:opacity-80 px-[10px] py-[6px] rounded-[20px]"
-              >
-                Retry
-              </button>
-            </div>
-        )}
-
-        {/* Apple-like update card (Linux only, only shows when update exists) */}
-        {isLinux && updateCheckState === "ready" && updateAvailable && (
+        {/* OTA update card */}
+        {(updateCheckState === "available" ||
+            updateCheckState === "installing" ||
+            updateCheckState === "installed" ||
+            updateCheckState === "error") && (
             <div className="bg-white rounded-[24px] p-[22px] h-auto border border-[#E5E7EB]">
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
@@ -483,27 +419,28 @@ const DashboardScreen: React.FC<Props> = ({
                       Update available
                     </h3>
                     <span className="text-[10px] font-bold uppercase px-2 py-[3px] rounded-full bg-[#ECFDF3] text-[#16A34A] border border-[#BBF7D0]">
-                  New version
-                </span>
+                      OTA ready
+                    </span>
                   </div>
 
                   <p className="text-[12px] text-[#62626A] mb-2">
-                    A newer Stellar Antivirus release is ready for Linux.
+                    A newer Stellar Antivirus release is ready to install. The app checks
+                    silently once per day and will relaunch after the update completes.
                   </p>
 
                   <div className="flex flex-wrap items-center gap-2 mb-3">
-                <span className="text-[11px] text-[#6B7280] bg-[#F6F6FD] border border-[#E5E7EB] px-2 py-1 rounded-full">
-                  Current:{" "}
-                  <span className="font-semibold text-[#0B0C19]">
-                    {currentVersion ?? "unknown"}
-                  </span>
-                </span>
                     <span className="text-[11px] text-[#6B7280] bg-[#F6F6FD] border border-[#E5E7EB] px-2 py-1 rounded-full">
-                  Latest:{" "}
+                      Current: {" "}
                       <span className="font-semibold text-[#0B0C19]">
-                    {latestVersion ?? "unknown"}
-                  </span>
-                </span>
+                        {currentVersion ?? "unknown"}
+                      </span>
+                    </span>
+                    <span className="text-[11px] text-[#6B7280] bg-[#F6F6FD] border border-[#E5E7EB] px-2 py-1 rounded-full">
+                      Latest: {" "}
+                      <span className="font-semibold text-[#0B0C19]">
+                        {latestVersion ?? "available"}
+                      </span>
+                    </span>
                   </div>
 
                   {latestNotes && (
@@ -512,53 +449,39 @@ const DashboardScreen: React.FC<Props> = ({
                         {latestNotes}
                       </div>
                   )}
+
+                  {updateCheckState === "error" && (
+                      <p className="text-[11px] text-[#EF4444]">
+                        The update could not be installed. Please check your connection and try again.
+                      </p>
+                  )}
+
+                  {updateCheckState === "installed" && (
+                      <p className="text-[11px] text-[#16A34A]">
+                        Update installed. Relaunching Stellar Antivirus…
+                      </p>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0">
                   <button
                       type="button"
-                      onClick={onCopyLinuxCommand}
-                      className="text-[12px] font-semibold text-white bg-[#2563EB] hover:opacity-90 px-[12px] py-[8px] rounded-[14px]"
+                      onClick={onInstallUpdate}
+                      disabled={updateCheckState === "installing" || updateCheckState === "installed"}
+                      className={`text-[12px] font-semibold text-white bg-[#2563EB] px-[12px] py-[8px] rounded-[14px] ${
+                          updateCheckState === "installing" || updateCheckState === "installed"
+                              ? "opacity-60 cursor-not-allowed"
+                              : "hover:opacity-90"
+                      }`}
                   >
-                    Copy command
+                    {updateCheckState === "installing"
+                        ? "Installing…"
+                        : updateCheckState === "installed"
+                            ? "Installed"
+                            : "Update now"}
                   </button>
                 </div>
               </div>
-
-              <div className="mt-3 bg-[#0B0C19] text-white rounded-[18px] px-4 py-3 overflow-x-auto">
-            <pre className="text-[11px] leading-5 whitespace-pre-wrap break-words">
-              {linuxUpdateCommand}
-            </pre>
-              </div>
-
-              <p className="text-[11px] text-[#6B7280] mt-2">
-                Requires: curl + python3 + sudo access (apt). Package comes from{" "}
-                <span className="font-semibold">desktopreleasesassetsprod.stellarsecurity.com</span>.
-              </p>
-            </div>
-        )}
-
-        {/* Up-to-date state (Linux only) */}
-        {isLinux && updateCheckState === "ready" && !updateAvailable && (
-            <div className="bg-white rounded-[24px] p-[18px] border border-[#E5E7EB] flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="w-2 h-2 rounded-full bg-[#2563EB]" />
-                <span className="text-[12px] font-semibold text-[#0B0C19]">
-              You’re up to date
-            </span>
-                <span className="text-[11px] text-[#6B7280]">
-              {currentVersion ? `v${currentVersion}` : ""}
-            </span>
-              </div>
-
-              <button
-                  type="button"
-                  onClick={onCopyLinuxCommand}
-                  className="text-[12px] font-semibold text-[#62626A] bg-[#F6F6FD] uppercase hover:opacity-80 px-[10px] py-[6px] rounded-[20px]"
-                  title="Copy the manual update command (advanced)"
-              >
-                Copy
-              </button>
             </div>
         )}
 

@@ -155,6 +155,11 @@ type FsAccessProbe = {
   error?: string | null;
 };
 
+type QuarantineResult = {
+  original_path: string;
+  quarantine_file_name: string;
+};
+
 const App: React.FC = () => {
   const [view, setView] = useState<View>(getInitialView);
 
@@ -411,8 +416,8 @@ const App: React.FC = () => {
       setShowThreatsModal(true);
 
       showNotification(
-          "Stellar Antivirus – threat blocked",
-          `${mapped.length} threat${mapped.length === 1 ? "" : "s"} blocked in real-time.`
+          "Stellar Antivirus – threat detected",
+          `${mapped.length} threat${mapped.length === 1 ? "" : "s"} detected in real-time.`
       );
 
       setLogs((prev) =>
@@ -421,7 +426,7 @@ const App: React.FC = () => {
             timestamp: ts,
             scan_type: "realtime",
             result: "threats_found",
-            details: `Real-time protection blocked ${mapped.length} threat${
+            details: `Real-time protection detected ${mapped.length} threat${
                 mapped.length === 1 ? "" : "s"
             }.`,
           })
@@ -486,7 +491,7 @@ const App: React.FC = () => {
             id: prev.length + 1,
             timestamp: ts,
             scan_type: "full_scan",
-            result: "clean",
+            result: "failed",
             details: "Scan failed or Tauri backend not available.",
           })
       );
@@ -537,6 +542,16 @@ const App: React.FC = () => {
       console.error("Quick scan error:", err);
       activeScanRef.current = null;
       setStatus(realtimeEnabled ? "protected" : "not_protected");
+      const ts = new Date().toISOString().slice(0, 16).replace("T", " ");
+      setLogs((prev) =>
+          pushLogDedup(prev, {
+            id: prev.length + 1,
+            timestamp: ts,
+            scan_type: "full_scan",
+            result: "failed",
+            details: "Quick scan failed or Tauri backend not available.",
+          })
+      );
       setScanProgress({ current: 0, total: 0, file: "" });
     }
   };
@@ -602,9 +617,16 @@ const App: React.FC = () => {
 
     if (isTauri && paths.length > 0) {
       try {
-        await invoke("quarantine_files", { paths });
+        const quarantineResults = await invoke<QuarantineResult[]>("quarantine_files", { paths });
+        const quarantineFileByPath = new Map(
+            quarantineResults.map((item) => [item.original_path, item.quarantine_file_name])
+        );
+        const storedEntries = newEntries.map((entry) => ({
+          ...entry,
+          quarantineFileName: quarantineFileByPath.get(entry.originalPath) ?? entry.fileName,
+        }));
 
-        setQuarantine((prev) => [...newEntries, ...prev]);
+        setQuarantine((prev) => [...storedEntries, ...prev]);
 
         setLogs((prev) =>
             pushLogDedup(prev, {
@@ -624,7 +646,7 @@ const App: React.FC = () => {
               id: prev.length + 1,
               timestamp: ts,
               scan_type: "full_scan",
-              result: "clean",
+              result: "failed",
               details: "Failed to move threats to quarantine.",
             })
         );
@@ -664,7 +686,7 @@ const App: React.FC = () => {
     if (isTauri) {
       try {
         await invoke("restore_from_quarantine", {
-          items: [{ fileName: entry.fileName, originalPath: entry.originalPath }],
+          items: [{ fileName: entry.quarantineFileName ?? entry.fileName, originalPath: entry.originalPath }],
         });
       } catch (err) {
         console.error("Restore error:", err);
@@ -673,7 +695,7 @@ const App: React.FC = () => {
               id: prev.length + 1,
               timestamp: ts,
               scan_type: "realtime",
-              result: "clean",
+              result: "failed",
               details: `Failed to restore file from quarantine: ${entry.fileName}`,
             })
         );
@@ -1081,7 +1103,7 @@ const App: React.FC = () => {
                             if (entry && isTauri) {
                               try {
                                 await invoke("delete_quarantine_files", {
-                                  fileNames: [entry.fileName],
+                                  fileNames: [entry.quarantineFileName ?? entry.fileName],
                                 });
                               } catch (err) {
                                 console.error("Failed to delete quarantine file", err);
