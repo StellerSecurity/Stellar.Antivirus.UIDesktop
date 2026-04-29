@@ -3,6 +3,7 @@ import type { ScanLogEntry } from "../types";
 
 type QuarantineEntry = {
   id: number;
+  quarantineId?: string;
   fileName: string;
   originalPath: string;
   quarantinedAt: string;
@@ -31,6 +32,12 @@ const LogsScreen: React.FC<LogsScreenProps> = ({
   );
 
   const hasLogs = logs.length > 0;
+
+  const getScanTypeLabel = (log: ScanLogEntry) => {
+    if (log.scan_type === "realtime") return "Real-time protection";
+    if (log.scan_type === "quick_scan") return "Quick scan";
+    return "Full scan";
+  };
 
   return (
     <div className=" flex flex-col pt-6 bg-white px-4 rounded-[20px]">
@@ -133,8 +140,8 @@ const ActivityList: React.FC<{ logs: ScanLogEntry[] }> = ({ logs }) => {
           const isThreatFound = log.result === "threats_found";
           const isThreatRemoved =
             log.details.toLowerCase().includes("moved to quarantine") ||
-            log.details.toLowerCase().includes("removed");
-          const isRealtime = log.scan_type === "realtime";
+            log.details.toLowerCase().includes("quarantined") ||
+            log.details.toLowerCase().includes("removed");
 
           let background = GRADIENTS.white;
           let borderColor = "border-[#E5E7EB]";
@@ -168,7 +175,7 @@ const ActivityList: React.FC<{ logs: ScanLogEntry[] }> = ({ logs }) => {
               <div className="flex items-center gap-2 text-[12px] opacity-90">
                 <span className="font-[400] text-[#62626A]">{log.timestamp.replace(" ", " — ")}</span>
                 <span className="opacity-60">•</span>
-                <span className="font-[400] text-[#62626A]">{isRealtime ? "Real-time protection" : "Full scan"}</span>
+                <span className="font-[400] text-[#62626A]">{getScanTypeLabel(log)}</span>
               </div>
             </li>
           );

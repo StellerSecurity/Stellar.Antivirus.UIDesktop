@@ -26,6 +26,9 @@ interface Props {
 }
 
 const OTA_LAST_CHECK_KEY = "stellar_antivirus_ota_last_check";
+const OTA_STATE_KEY = "stellar_antivirus_ota_state";
+const OTA_LATEST_VERSION_KEY = "stellar_antivirus_ota_latest_version";
+const OTA_MESSAGE_KEY = "stellar_antivirus_ota_message";
 const OTA_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 const DashboardScreen: React.FC<Props> = ({
@@ -93,6 +96,12 @@ const DashboardScreen: React.FC<Props> = ({
               ? "You can keep using your Mac or PC while the scan runs. We'll notify you here if any threats are found."
               : "Run a Quick scan for common locations, or Full scan for a deeper check.";
 
+  const getScanTypeLabel = (log: ScanLogEntry) => {
+    if (log.scan_type === "realtime") return "Real-time protection";
+    if (log.scan_type === "quick_scan") return "Quick scan";
+    return "Full scan";
+  };
+
   // --- OTA update flow ---
   const [updateCheckState, setUpdateCheckState] = useState<
       "idle" | "available" | "installing" | "installed" | "error"
@@ -145,10 +154,28 @@ const DashboardScreen: React.FC<Props> = ({
         if (cancelled) return;
 
         if (update) {
+          const nextVersion = update.version ? normalizeVersion(update.version) : null;
           setAvailableUpdate(update);
-          setLatestVersion(update.version ? normalizeVersion(update.version) : null);
+          setLatestVersion(nextVersion);
           setLatestNotes(typeof update.body === "string" ? update.body : null);
           setUpdateCheckState("available");
+          if (typeof window !== "undefined") {
+            window.localStorage.setItem(OTA_STATE_KEY, "available");
+            if (nextVersion) window.localStorage.setItem(OTA_LATEST_VERSION_KEY, nextVersion);
+            window.localStorage.setItem(
+              OTA_MESSAGE_KEY,
+              nextVersion
+                ? `Update available: ${nextVersion} is ready to install from the dashboard.`
+                : "A newer Stellar Antivirus release is available."
+            );
+          }
+        } else if (typeof window !== "undefined") {
+          window.localStorage.setItem(OTA_STATE_KEY, "up_to_date");
+          if (ver) window.localStorage.setItem(OTA_LATEST_VERSION_KEY, normalizeVersion(ver));
+          window.localStorage.setItem(
+            OTA_MESSAGE_KEY,
+            ver ? `Stellar Antivirus is up to date (${normalizeVersion(ver)}).` : "Stellar Antivirus is up to date."
+          );
         }
       } catch {
         if (!cancelled) setUpdateCheckState("idle");
@@ -172,6 +199,10 @@ const DashboardScreen: React.FC<Props> = ({
       await relaunch();
     } catch {
       setUpdateCheckState("error");
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(OTA_STATE_KEY, "error");
+        window.localStorage.setItem(OTA_MESSAGE_KEY, "Update installation failed. Please try again.");
+      }
     }
   };
 
@@ -519,8 +550,7 @@ const DashboardScreen: React.FC<Props> = ({
           ) : (
               <div className="space-y-2">
                 {recentLogs.map((log) => {
-                  const isThreatFound = log.result === "threats_found";
-                  const isRealtime = log.scan_type === "realtime";
+                  const isThreatFound = log.result === "threats_found";
                   const isThreatRemoved =
                       (log.details || "").toLowerCase().includes("moved to quarantine") ||
                       (log.details || "").toLowerCase().includes("removed");
@@ -557,14 +587,14 @@ const DashboardScreen: React.FC<Props> = ({
                           style={{ background }}
                       >
                   <span className="text-[12px] font-medium">
-                    {log.details || (isRealtime ? "Real-time protection" : "Full scan")}
+                    {log.details || getScanTypeLabel(log)}
                   </span>
 
                         <div className="flex items-center gap-2 text-[12px] opacity-90 font-semibold text-[#62626A]">
                           <span className="font-[400]">{log.timestamp.replace(" ", " — ")}</span>
                           <span className="opacity-60">•</span>
                           <span className="font-[400]">
-                      {isRealtime ? "Real-time protection" : "Full scan"}
+                      {getScanTypeLabel(log)}
                     </span>
                         </div>
                       </button>
