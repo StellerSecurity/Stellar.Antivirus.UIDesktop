@@ -1,8 +1,8 @@
 export type ProtectionStatus = "protected" | "not_protected" | "scanning" | "at_risk";
 
-export type ScanType = "realtime" | "full_scan";
+export type ScanType = "realtime" | "quick_scan" | "full_scan";
 
-export type ScanResult = "clean" | "threats_found" | "failed";
+export type ScanResult = "clean" | "threats_found" | "failed" | "completed_with_warnings";
 
 export interface ScanLogEntry {
   id: number;
@@ -15,7 +15,7 @@ export interface ScanLogEntry {
   borderColor?: string;
 }
 
-export type ThreatSource = "full_scan" | "realtime";
+export type ThreatSource = "quick_scan" | "full_scan" | "realtime";
 export type ThreatStatus = "active" | "quarantined" | "deleted";
 
 export interface Threat {
@@ -30,6 +30,7 @@ export interface Threat {
 }
 export interface QuarantineEntry {
   id: number;
+  quarantineId?: string;
   fileName: string;
   quarantineFileName?: string;
   originalPath: string;

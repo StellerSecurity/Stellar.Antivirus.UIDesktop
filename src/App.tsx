@@ -17,6 +17,11 @@ import {
   isEnabled as isAutostartEnabled,
   enable as enableAutostart,
 } from "@tauri-apps/plugin-autostart";
+import {
+  isPermissionGranted as isNotificationPermissionGranted,
+  requestPermission as requestNotificationPermission,
+  sendNotification,
+} from "@tauri-apps/plugin-notification";
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -63,13 +68,22 @@ const canUseNotifications =
     typeof window !== "undefined" && "Notification" in window;
 
 const showNotification = (title: string, body: string) => {
-  if (!canUseNotifications) return;
-  if (Notification.permission !== "granted") return;
-  try {
-    new Notification(title, { body });
-  } catch {
-    // ignore
-  }
+  void (async () => {
+    try {
+      if (isTauri) {
+        const granted = await isNotificationPermissionGranted();
+        if (!granted) return;
+        sendNotification({ title, body });
+        return;
+      }
+
+      if (!canUseNotifications) return;
+      if (Notification.permission !== "granted") return;
+      new Notification(title, { body });
+    } catch (err) {
+      console.error("Failed to show notification:", err);
+    }
+  })();
 };
 
 const getInitialToken = (): string | null => {
@@ -131,6 +145,34 @@ const baseNameFromPath = (p: string): string => {
   return last && last.length > 0 ? last : normalized;
 };
 
+const formatQuarantineTimestamp = (value?: number): string => {
+  if (!value) return new Date().toISOString().slice(0, 16).replace("T", " ");
+  const millis = value > 10_000_000_000 ? value : value * 1000;
+  return new Date(millis).toISOString().slice(0, 16).replace("T", " ");
+};
+
+type ScanStatsPayload = {
+  files_discovered?: number;
+  files_hashed?: number;
+  files_skipped?: number;
+  threats_found?: number;
+  eicar_found?: number;
+  duration_ms?: number;
+  cancelled?: boolean;
+  cloud_hashes_queued?: number;
+  cloud_hashes_checked?: number;
+  cloud_hashes_failed?: number;
+  cloud_batches_total?: number;
+  cloud_batches_succeeded?: number;
+  cloud_batches_failed?: number;
+  cloud_retry_count?: number;
+  file_hash_cache_hits?: number;
+  verdict_cache_hits?: number;
+  cloud_hashes_skipped_cached?: number;
+  completed_with_warnings?: boolean;
+};
+
+
 // Optional: avoid duplicate log spam within same minute for same scan_type/result/details
 const pushLogDedup = (prev: ScanLogEntry[], entry: ScanLogEntry) => {
   const last = prev[0];
@@ -156,8 +198,12 @@ type FsAccessProbe = {
 };
 
 type QuarantineResult = {
+  quarantine_id: string;
   original_path: string;
   quarantine_file_name: string;
+  display_name: string;
+  detection?: string | null;
+  quarantined_at?: number;
 };
 
 const App: React.FC = () => {
@@ -198,6 +244,7 @@ const App: React.FC = () => {
   const [quarantine, setQuarantine] = useState<QuarantineEntry[]>([]);
   const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
 
   // Load stored logs/threats/quarantine from localStorage
   useEffect(() => {
@@ -219,6 +266,40 @@ const App: React.FC = () => {
     } catch {}
   }, []);
 
+  // Load backend-owned quarantine manifest so quarantine view works after restart and after real-time quarantine.
+  useEffect(() => {
+    if (!isTauri) return;
+
+    (async () => {
+      try {
+        const items = await invoke<QuarantineResult[]>("list_quarantine_items");
+        const mapped: QuarantineEntry[] = items.map((item, idx) => ({
+          id: Date.now() + idx,
+          quarantineId: item.quarantine_id,
+          fileName: item.display_name || baseNameFromPath(item.original_path),
+          quarantineFileName: item.quarantine_file_name,
+          originalPath: item.original_path,
+          quarantinedAt: formatQuarantineTimestamp(item.quarantined_at),
+          detection: item.detection || "Threat",
+          source: "realtime",
+        }));
+
+        setQuarantine((prev) => {
+          const byKey = new Map<string, QuarantineEntry>();
+          for (const entry of prev) {
+            byKey.set(entry.quarantineId || entry.quarantineFileName || entry.originalPath, entry);
+          }
+          for (const entry of mapped) {
+            byKey.set(entry.quarantineId || entry.quarantineFileName || entry.originalPath, entry);
+          }
+          return Array.from(byKey.values());
+        });
+      } catch (err) {
+        console.error("Failed to load quarantine manifest:", err);
+      }
+    })();
+  }, []);
+
   // Persist logs/threats/quarantine
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -237,6 +318,22 @@ const App: React.FC = () => {
         JSON.stringify(quarantine)
     );
   }, [quarantine]);
+
+  // Request native notification permission once so background/tray notifications can be shown on macOS.
+  useEffect(() => {
+    if (!isTauri) return;
+
+    (async () => {
+      try {
+        const granted = await isNotificationPermissionGranted();
+        if (!granted) {
+          await requestNotificationPermission();
+        }
+      } catch (err) {
+        console.error("Failed to request notification permission:", err);
+      }
+    })();
+  }, []);
 
   // Configure autostart for Tauri
   useEffect(() => {
@@ -302,12 +399,21 @@ const App: React.FC = () => {
     listen("scan_finished", (event) => {
       const payload = event.payload as any;
       const threatsArray = (payload.threats as [string, string][]) || [];
+      const scanStats = payload.stats as ScanStatsPayload | undefined;
 
       const now = new Date();
       const ts = now.toISOString().slice(0, 16).replace("T", " ");
 
-      const scanLabel =
-          activeScanRef.current === "quick" ? "Quick scan" : "Full scan";
+      const rawScanKind = typeof payload.scan_kind === "string" ? payload.scan_kind : null;
+      const payloadScanKind = rawScanKind === "quick_scan" || rawScanKind === "quick"
+          ? "quick"
+          : rawScanKind === "full_scan" || rawScanKind === "full"
+              ? "full"
+              : null;
+      const activeScanKind = payloadScanKind ?? activeScanRef.current ?? "full";
+      const scanLabel = payload.scan_label || (activeScanKind === "quick" ? "Quick scan" : "Full scan");
+      const scanLogType = activeScanKind === "quick" ? "quick_scan" : "full_scan";
+      const completedWithWarnings = Boolean(scanStats?.completed_with_warnings);
 
       if (threatsArray.length > 0) {
         const nowIso = now.toISOString();
@@ -322,7 +428,7 @@ const App: React.FC = () => {
             detection,
             recommendedAction: "delete",
             detectedAt: nowIso,
-            source: "full_scan",
+            source: scanLogType,
             status: "active",
           };
         });
@@ -331,16 +437,11 @@ const App: React.FC = () => {
         setThreats((prev) => mergeThreatsByPath(prev, mapped));
         setShowThreatsModal(true);
 
-        showNotification(
-            "Stellar Antivirus – threats found",
-            `${mapped.length} threat${mapped.length === 1 ? "" : "s"} detected during ${scanLabel.toLowerCase()}.`
-        );
-
         setLogs((prev) =>
             pushLogDedup(prev, {
               id: prev.length + 1,
               timestamp: ts,
-              scan_type: "full_scan",
+              scan_type: scanLogType,
               result: "threats_found",
               details: `${scanLabel} found ${mapped.length} threat${
                   mapped.length === 1 ? "" : "s"
@@ -350,18 +451,15 @@ const App: React.FC = () => {
       } else {
         setStatus(realtimeEnabled ? "protected" : "not_protected");
 
-        showNotification(
-            "Stellar Antivirus – scan completed",
-            `${scanLabel} finished. No threats found.`
-        );
-
         setLogs((prev) =>
             pushLogDedup(prev, {
               id: prev.length + 1,
               timestamp: ts,
-              scan_type: "full_scan",
-              result: "clean",
-              details: `${scanLabel} completed. No threats found.`,
+              scan_type: scanLogType,
+              result: completedWithWarnings ? "completed_with_warnings" : "clean",
+              details: completedWithWarnings
+                  ? `${scanLabel} completed. Some items need attention.`
+                  : `${scanLabel} completed. No threats found.`,
             })
         );
       }
@@ -435,6 +533,53 @@ const App: React.FC = () => {
       setStatus("at_risk");
     }).then((fn) => {
       unlistenRealtime = fn;
+    });
+
+    listen("realtime_threat_quarantined", (event) => {
+      const payload = event.payload as QuarantineResult;
+      if (!payload?.original_path) return;
+
+      const now = new Date();
+      const ts = now.toISOString().slice(0, 16).replace("T", " ");
+
+      const entry: QuarantineEntry = {
+        id: Date.now(),
+        quarantineId: payload.quarantine_id,
+        fileName: payload.display_name || baseNameFromPath(payload.original_path),
+        quarantineFileName: payload.quarantine_file_name,
+        originalPath: payload.original_path,
+        quarantinedAt: formatQuarantineTimestamp(payload.quarantined_at),
+        detection: payload.detection || "Threat",
+        source: "realtime",
+      };
+
+      setQuarantine((prev) => [
+        entry,
+        ...prev.filter((q) => q.originalPath !== entry.originalPath),
+      ]);
+      setThreats((prev) => prev.filter((t) => t.filePath !== entry.originalPath));
+      setStatus(realtimeEnabled ? "protected" : "not_protected");
+
+      showNotification(
+        "Stellar Antivirus – threat quarantined",
+        `${entry.fileName} was automatically quarantined.`
+      );
+
+      setLogs((prev) =>
+        pushLogDedup(prev, {
+          id: prev.length + 1,
+          timestamp: ts,
+          scan_type: "realtime",
+          result: "clean",
+          details: `Real-time protection quarantined: ${entry.fileName}.`,
+        })
+      );
+    }).then((fn) => {
+      const existing = unlistenRealtime;
+      unlistenRealtime = () => {
+        existing?.();
+        fn();
+      };
     });
 
     return () => {
@@ -547,7 +692,7 @@ const App: React.FC = () => {
           pushLogDedup(prev, {
             id: prev.length + 1,
             timestamp: ts,
-            scan_type: "full_scan",
+            scan_type: "quick_scan",
             result: "failed",
             details: "Quick scan failed or Tauri backend not available.",
           })
@@ -556,20 +701,27 @@ const App: React.FC = () => {
     }
   };
 
-  const stopFullScan = () => {
+  const stopFullScan = async () => {
     if (scanIntervalRef.current) {
       clearInterval(scanIntervalRef.current);
       scanIntervalRef.current = null;
     }
 
-    // UI stop only. True cancel requires a Rust cancel flag.
+    if (isTauri) {
+      try {
+        await invoke("cancel_scan");
+      } catch (err) {
+        console.error("Failed to cancel scan:", err);
+      }
+    }
+
     activeScanRef.current = null;
     setStatus(realtimeEnabled ? "protected" : "not_protected");
     setScanProgress({ current: 0, total: 0, file: "" });
     lastProgressRef.current = { current: 0, total: 0, file: "" };
   };
 
-  const lastFullScan = logs.find((l) => l.scan_type === "full_scan") || null;
+  const lastManualScan = logs.find((l) => l.scan_type === "quick_scan" || l.scan_type === "full_scan") || null;
 
   const isAntivirusView =
       view === "antivirus_dashboard" ||
@@ -618,13 +770,19 @@ const App: React.FC = () => {
     if (isTauri && paths.length > 0) {
       try {
         const quarantineResults = await invoke<QuarantineResult[]>("quarantine_files", { paths });
-        const quarantineFileByPath = new Map(
-            quarantineResults.map((item) => [item.original_path, item.quarantine_file_name])
+        const quarantineResultByPath = new Map(
+            quarantineResults.map((item) => [item.original_path, item])
         );
-        const storedEntries = newEntries.map((entry) => ({
-          ...entry,
-          quarantineFileName: quarantineFileByPath.get(entry.originalPath) ?? entry.fileName,
-        }));
+        const storedEntries = newEntries.map((entry) => {
+          const result = quarantineResultByPath.get(entry.originalPath);
+          return {
+            ...entry,
+            quarantineId: result?.quarantine_id,
+            quarantineFileName: result?.quarantine_file_name ?? entry.fileName,
+            fileName: result?.display_name ?? entry.fileName,
+            detection: result?.detection ?? entry.detection,
+          };
+        });
 
         setQuarantine((prev) => [...storedEntries, ...prev]);
 
@@ -686,7 +844,7 @@ const App: React.FC = () => {
     if (isTauri) {
       try {
         await invoke("restore_from_quarantine", {
-          items: [{ fileName: entry.quarantineFileName ?? entry.fileName, originalPath: entry.originalPath }],
+          items: [{ quarantineId: entry.quarantineId, fileName: entry.quarantineFileName ?? entry.fileName, originalPath: entry.originalPath }],
         });
       } catch (err) {
         console.error("Restore error:", err);
@@ -807,7 +965,7 @@ const App: React.FC = () => {
     setView(permissionsGranted ? "antivirus_dashboard" : "onboarding_step4");
   };
 
-  const handleLogout = () => {
+  const performLogout = () => {
     if (typeof window !== "undefined") {
       window.localStorage.removeItem(STORAGE_KEYS.token);
       window.localStorage.removeItem(STORAGE_KEYS.dashboard);
@@ -816,9 +974,14 @@ const App: React.FC = () => {
       window.localStorage.removeItem(STORAGE_KEYS.permissionsGranted);
     }
 
+    setShowLogoutConfirm(false);
     setToken(null);
     setDashboard(null);
     setView("onboarding_step1");
+  };
+
+  const handleLogout = () => {
+    setShowLogoutConfirm(true);
   };
 
   const handleOnboardingNext = () => {
@@ -938,7 +1101,7 @@ const App: React.FC = () => {
                         onFullScan={startFullScan}
                         onQuickScan={startQuickScan}
                         onStopScan={stopFullScan}
-                        lastScan={lastFullScan}
+                        lastScan={lastManualScan}
                         recentLogs={logs.slice(0, 4)}
                         scanProgress={scanProgress}
                         onOpenActivityLog={handleOpenActivityLog}
@@ -957,7 +1120,13 @@ const App: React.FC = () => {
                 )}
 
                 {view === "antivirus_settings" && (
-                    <SettingsScreen onLogout={handleLogout} dashboard={dashboard} />
+                    <SettingsScreen
+                        onLogout={handleLogout}
+                        dashboard={dashboard}
+                        realtimeEnabled={realtimeEnabled}
+                        status={status}
+                        logs={logs}
+                    />
                 )}
               </main>
             </div>
@@ -1102,9 +1271,15 @@ const App: React.FC = () => {
                             const entry = quarantine.find((q) => q.id === pendingDeleteId);
                             if (entry && isTauri) {
                               try {
-                                await invoke("delete_quarantine_files", {
-                                  fileNames: [entry.quarantineFileName ?? entry.fileName],
-                                });
+                                if (entry.quarantineId) {
+                                  await invoke("delete_quarantine_items", {
+                                    ids: [entry.quarantineId],
+                                  });
+                                } else {
+                                  await invoke("delete_quarantine_files", {
+                                    fileNames: [entry.quarantineFileName ?? entry.fileName],
+                                  });
+                                }
                               } catch (err) {
                                 console.error("Failed to delete quarantine file", err);
                               }
@@ -1119,6 +1294,52 @@ const App: React.FC = () => {
                     >
                       DELETE
                     </button>
+                  </div>
+                </div>
+              </div>
+          )}
+
+          {showLogoutConfirm && (
+              <div className="fixed inset-0 z-50 bg-[#0B0C1980] backdrop-blur-[10px] flex items-center justify-center">
+                <div className="relative w-[480px] bg-white rounded-[24px] shadow-2xl p-6">
+                  <button
+                      type="button"
+                      aria-label="Close logout confirmation"
+                      onClick={() => setShowLogoutConfirm(false)}
+                      className="absolute right-5 top-5 w-9 h-9 rounded-full bg-[#F6F6FD] text-[#62626A] hover:bg-[#ECECF8] hover:text-[#303031] flex items-center justify-center text-[20px] leading-none transition-colors"
+                  >
+                    ×
+                  </button>
+
+                  <div className="flex items-center gap-3 mb-4 pr-10">
+                    <div className="w-10 h-10 rounded-full bg-[#FEE2E2] flex items-center justify-center">
+                      <span className="text-[#DC2626] text-xl font-semibold">!</span>
+                    </div>
+                    <div>
+                      <h2 className="text-[20px] font-semibold text-[#303031] font-poppins">
+                        Log out of Stellar Antivirus?
+                      </h2>
+                      <p className="text-[12px] text-[#62626A] mt-1">
+                        You will need to log in again with your Stellar ID to use your account on this device.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end gap-3 mt-6">
+                    <Button
+                        type="button"
+                        onClick={() => setShowLogoutConfirm(false)}
+                        className="bg-[#E0E7FF] !text-[#3730A3] hover:bg-[#C7D2FE]"
+                    >
+                      CANCEL
+                    </Button>
+                    <Button
+                        type="button"
+                        onClick={performLogout}
+                        className="bg-white !text-[#111827] border border-[#D1D5DB] hover:bg-[#F9FAFB]"
+                    >
+                      LOG OUT
+                    </Button>
                   </div>
                 </div>
               </div>

@@ -3,6 +3,7 @@ import type { ScanLogEntry } from "../types";
 
 type QuarantineEntry = {
   id: number;
+  quarantineId?: string;
   fileName: string;
   originalPath: string;
   quarantinedAt: string;
@@ -17,6 +18,18 @@ interface LogsScreenProps {
   onDeleteQuarantine: (id: number) => void;
   onClearLogs: () => void;
 }
+
+const getScanTypeLabel = (log: ScanLogEntry): string => {
+  if (log.scan_type === "realtime") return "Real-time protection";
+  if (log.scan_type === "quick_scan") return "Quick scan";
+  if (log.scan_type === "full_scan") return "Full scan";
+  return "Activity";
+};
+
+const formatTimestamp = (timestamp?: string): string => {
+  if (!timestamp) return "Unknown time";
+  return timestamp.replace(" ", " - ");
+};
 
 const LogsScreen: React.FC<LogsScreenProps> = ({
   logs,
@@ -33,8 +46,7 @@ const LogsScreen: React.FC<LogsScreenProps> = ({
   const hasLogs = logs.length > 0;
 
   return (
-    <div className=" flex flex-col pt-6 bg-white px-4 rounded-[20px]">
-      {/* Header */}
+    <div className="flex flex-col pt-6 bg-white px-4 rounded-[20px]">
       <div className="flex items-center justify-between mb-4">
         <div>
           <h1 className="text-[14px] font-semibold uppercase text-[#2761FC] mb-[12px]">
@@ -45,49 +57,43 @@ const LogsScreen: React.FC<LogsScreenProps> = ({
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {/* Clear logs – kun relevant for Activity tab */}
           <button
             onClick={onClearLogs}
             disabled={!hasLogs}
-
-            className={`text-[12px] rounded-full uppercase font-semibold text-[#62626A] bg-[#F6F6FD] ${!hasLogs ? "opacity-50" : ""
-              }`}
+            className={`text-[12px] rounded-full uppercase font-semibold text-[#62626A] bg-[#F6F6FD] px-4 py-2 ${
+              !hasLogs ? "opacity-50" : ""
+            }`}
           >
             Clear logs
           </button>
           <button
-
             onClick={onViewThreats}
-            className="text-[12px] uppercase rounded-full font-semibold text-[#62626A] bg-[#F6F6FD]"
+            className="text-[12px] uppercase rounded-full font-semibold text-[#62626A] bg-[#F6F6FD] px-4 py-2"
           >
-            View  threats
+            View threats
           </button>
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="inline-flex border-2 border-[#F6F6FD] mb-4 rounded-full ">
+      <div className="inline-flex border-2 border-[#F6F6FD] mb-4 rounded-full">
         <button
-          className={`px-4 h-8 rounded-full text-[11px] font-medium uppercase ${activeTab === "activity"
-            ? "bg-[#2761FC] text-white"
-            : "text-[#6B7280]"
-            }`}
+          className={`px-4 h-8 rounded-full text-[11px] font-medium uppercase ${
+            activeTab === "activity" ? "bg-[#2761FC] text-white" : "text-[#6B7280]"
+          }`}
           onClick={() => setActiveTab("activity")}
         >
           Activity Log
         </button>
         <button
-          className={`px-4 h-8 rounded-full text-[11px] font-medium uppercase ${activeTab === "quarantine"
-            ? "bg-[#2761FC] text-white"
-            : "text-[#6B7280]"
-            }`}
+          className={`px-4 h-8 rounded-full text-[11px] font-medium uppercase ${
+            activeTab === "quarantine" ? "bg-[#2761FC] text-white" : "text-[#6B7280]"
+          }`}
           onClick={() => setActiveTab("quarantine")}
         >
           Quarantine
         </button>
       </div>
 
-      {/* Content */}
       <div className="flex-1 bg-white rounded-[24px] p-1 overflow-hidden">
         {activeTab === "activity" ? (
           <ActivityList logs={logs} />
@@ -114,61 +120,59 @@ const ActivityList: React.FC<{ logs: ScanLogEntry[] }> = ({ logs }) => {
     );
   }
 
-  // User-provided gradients
-  const GRADIENTS = {
-    white: "linear-gradient(282deg, rgba(246, 246, 253, 1) 28%, rgba(255, 255, 255, 1) 100%)",
-    red: "linear-gradient(282deg, rgba(255, 233, 233, 1) 28%, rgba(255, 255, 255, 1) 100%)",
-    green: "linear-gradient(282deg, rgba(166, 255, 199, 1) 28%, rgba(255, 255, 255, 1) 100%)",
+  const gradients = {
+    white:
+      "linear-gradient(282deg, rgba(246, 246, 253, 1) 28%, rgba(255, 255, 255, 1) 100%)",
+    red:
+      "linear-gradient(282deg, rgba(255, 233, 233, 1) 28%, rgba(255, 255, 255, 1) 100%)",
+    green:
+      "linear-gradient(282deg, rgba(166, 255, 199, 1) 28%, rgba(255, 255, 255, 1) 100%)",
   };
 
   return (
     <div className="h-full overflow-y-auto pr-2 pb-2">
       <ul className="space-y-3">
-        {logs.map((log) => {
-          // Logic:
-          // Threat Found -> Red
-          // Threat Removed (quarantined/removed) -> Green
-          // Clean/Neutral -> White
-
+        {logs.map((log, index) => {
+          const details = log.details || "Activity recorded.";
           const isThreatFound = log.result === "threats_found";
+          const lowerDetails = details.toLowerCase();
           const isThreatRemoved =
-            log.details.toLowerCase().includes("moved to quarantine") ||
-            log.details.toLowerCase().includes("removed");
-          const isRealtime = log.scan_type === "realtime";
+            lowerDetails.includes("moved to quarantine") ||
+            lowerDetails.includes("quarantined") ||
+            lowerDetails.includes("removed");
 
-          let background = GRADIENTS.white;
+          let background = gradients.white;
           let borderColor = "border-[#E5E7EB]";
           let textColor = "text-[#6B7280]";
 
           if (isThreatFound) {
-            background = GRADIENTS.red;
+            background = gradients.red;
             borderColor = "border-[#FFCCCC]";
-            textColor = "text-[#F87171]"; // Red text for threats found
+            textColor = "text-[#F87171]";
           } else if (isThreatRemoved) {
-            background = GRADIENTS.green;
+            background = gradients.green;
             borderColor = "border-[#6EE7B7]";
-            textColor = "text-[#34D399]"; // Green text for removed
-          } else {
-            // Clean / Neutral -> White gradient
-            background = GRADIENTS.white;
-            borderColor = "border-[#E5E7EB]";
-            textColor = "text-[#6B7280]";
+            textColor = "text-[#34D399]";
           }
 
           return (
             <li
-              key={log.id}
-              className={`flex items-center justify-between rounded-full border px-5 py-3 ${borderColor} ${textColor}`}
+              key={log.id ?? index}
+              className={`flex items-center justify-between gap-4 rounded-full border px-5 py-3 ${borderColor} ${textColor}`}
               style={{ background }}
             >
-              <div className="text-[12px] font-medium">
-                {log.details}
+              <div className="text-[12px] font-medium min-w-0 truncate">
+                {details}
               </div>
 
-              <div className="flex items-center gap-2 text-[12px] opacity-90">
-                <span className="font-[400] text-[#62626A]">{log.timestamp.replace(" ", " — ")}</span>
+              <div className="flex shrink-0 items-center gap-2 text-[12px] opacity-90">
+                <span className="font-[400] text-[#62626A]">
+                  {formatTimestamp(log.timestamp)}
+                </span>
                 <span className="opacity-60">•</span>
-                <span className="font-[400] text-[#62626A]">{isRealtime ? "Real-time protection" : "Full scan"}</span>
+                <span className="font-[400] text-[#62626A]">
+                  {getScanTypeLabel(log)}
+                </span>
               </div>
             </li>
           );
@@ -215,15 +219,12 @@ const QuarantineList: React.FC<QuarantineListProps> = ({
           </tr>
         </thead>
         <tbody>
-          {entries.map((q) => (
-            <tr
-              key={q.id}
-              className="text-xs text-[#F96262]  rounded-2xl"
-            >
+          {entries.map((q, index) => (
+            <tr key={q.id ?? index} className="text-xs text-[#F96262] rounded-2xl">
               <td className="px-1 py-2 align-top">
                 <div className="flex items-start gap-1">
-                  <div className=" text-[10px] font-semibold text-[#F96262]">
-                    EXE
+                  <div className="text-[10px] font-semibold text-[#F96262]">
+                    FILE
                   </div>
                   <span className="font-medium line-clamp-1">
                     {q.fileName || "Unknown file"}
@@ -232,7 +233,7 @@ const QuarantineList: React.FC<QuarantineListProps> = ({
               </td>
               <td className="px-1 py-2 align-top">
                 <span className="text-[11px] text-[#F96262] break-all">
-                  {q.originalPath}
+                  {q.originalPath || "Unknown location"}
                 </span>
               </td>
               <td className="px-1 py-2 align-top">
@@ -242,11 +243,11 @@ const QuarantineList: React.FC<QuarantineListProps> = ({
               </td>
               <td className="px-1 py-2 align-top">
                 <span className="text-[11px] text-[#62626A]">
-                  {q.quarantinedAt}
+                  {q.quarantinedAt || "Unknown time"}
                 </span>
               </td>
-              <td className="px-1 py-0 ">
-                <div className="">
+              <td className="px-1 py-0">
+                <div>
                   <button
                     onClick={() => onRestore(q.id)}
                     className="text-[12px] text-[#62626A80] hover:underline text-left"
