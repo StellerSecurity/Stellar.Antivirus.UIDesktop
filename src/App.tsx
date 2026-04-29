@@ -20,6 +20,7 @@ import {
 import {
   isPermissionGranted as isNotificationPermissionGranted,
   requestPermission as requestNotificationPermission,
+  sendNotification,
 } from "@tauri-apps/plugin-notification";
 
 import { invoke } from "@tauri-apps/api/core";
@@ -67,13 +68,22 @@ const canUseNotifications =
     typeof window !== "undefined" && "Notification" in window;
 
 const showNotification = (title: string, body: string) => {
-  if (!canUseNotifications) return;
-  if (Notification.permission !== "granted") return;
-  try {
-    new Notification(title, { body });
-  } catch {
-    // ignore
-  }
+  void (async () => {
+    try {
+      if (isTauri) {
+        const granted = await isNotificationPermissionGranted();
+        if (!granted) return;
+        sendNotification({ title, body });
+        return;
+      }
+
+      if (!canUseNotifications) return;
+      if (Notification.permission !== "granted") return;
+      new Notification(title, { body });
+    } catch (err) {
+      console.error("Failed to show notification:", err);
+    }
+  })();
 };
 
 const getInitialToken = (): string | null => {
@@ -135,6 +145,12 @@ const baseNameFromPath = (p: string): string => {
   return last && last.length > 0 ? last : normalized;
 };
 
+const formatQuarantineTimestamp = (value?: number): string => {
+  if (!value) return new Date().toISOString().slice(0, 16).replace("T", " ");
+  const millis = value > 10_000_000_000 ? value : value * 1000;
+  return new Date(millis).toISOString().slice(0, 16).replace("T", " ");
+};
+
 type ScanStatsPayload = {
   files_discovered?: number;
   files_hashed?: number;
@@ -156,33 +172,6 @@ type ScanStatsPayload = {
   completed_with_warnings?: boolean;
 };
 
-const formatScanStats = (stats?: ScanStatsPayload | null): string => {
-  if (!stats) return "";
-
-  const parts: string[] = [];
-  if (typeof stats.files_discovered === "number") parts.push(String(stats.files_discovered) + " discovered");
-  if (typeof stats.files_hashed === "number") parts.push(String(stats.files_hashed) + " hashed");
-  if (typeof stats.file_hash_cache_hits === "number" && stats.file_hash_cache_hits > 0) {
-    parts.push(String(stats.file_hash_cache_hits) + " hash cache hit" + (stats.file_hash_cache_hits === 1 ? "" : "s"));
-  }
-  if (typeof stats.verdict_cache_hits === "number" && stats.verdict_cache_hits > 0) {
-    parts.push(String(stats.verdict_cache_hits) + " verdict cache hit" + (stats.verdict_cache_hits === 1 ? "" : "s"));
-  }
-  if (typeof stats.cloud_hashes_checked === "number") parts.push(String(stats.cloud_hashes_checked) + " cloud checked");
-  if (typeof stats.cloud_hashes_failed === "number" && stats.cloud_hashes_failed > 0) {
-    parts.push(String(stats.cloud_hashes_failed) + " cloud check failed");
-  }
-  if (typeof stats.cloud_retry_count === "number" && stats.cloud_retry_count > 0) {
-    parts.push(String(stats.cloud_retry_count) + " retry" + (stats.cloud_retry_count === 1 ? "" : "s"));
-  }
-  if (typeof stats.files_skipped === "number" && stats.files_skipped > 0) parts.push(String(stats.files_skipped) + " skipped");
-  if (typeof stats.eicar_found === "number" && stats.eicar_found > 0) {
-    parts.push(String(stats.eicar_found) + " EICAR test file" + (stats.eicar_found === 1 ? "" : "s"));
-  }
-  if (typeof stats.duration_ms === "number") parts.push(String(Math.max(1, Math.round(stats.duration_ms / 1000))) + "s");
-
-  return parts.length ? " (" + parts.join(", ") + ")" : "";
-};
 
 // Optional: avoid duplicate log spam within same minute for same scan_type/result/details
 const pushLogDedup = (prev: ScanLogEntry[], entry: ScanLogEntry) => {
@@ -214,6 +203,7 @@ type QuarantineResult = {
   quarantine_file_name: string;
   display_name: string;
   detection?: string | null;
+  quarantined_at?: number;
 };
 
 const App: React.FC = () => {
@@ -274,6 +264,40 @@ const App: React.FC = () => {
       const rawQ = window.localStorage.getItem(STORAGE_KEYS.quarantine);
       if (rawQ) setQuarantine(JSON.parse(rawQ) as QuarantineEntry[]);
     } catch {}
+  }, []);
+
+  // Load backend-owned quarantine manifest so quarantine view works after restart and after real-time quarantine.
+  useEffect(() => {
+    if (!isTauri) return;
+
+    (async () => {
+      try {
+        const items = await invoke<QuarantineResult[]>("list_quarantine_items");
+        const mapped: QuarantineEntry[] = items.map((item, idx) => ({
+          id: Date.now() + idx,
+          quarantineId: item.quarantine_id,
+          fileName: item.display_name || baseNameFromPath(item.original_path),
+          quarantineFileName: item.quarantine_file_name,
+          originalPath: item.original_path,
+          quarantinedAt: formatQuarantineTimestamp(item.quarantined_at),
+          detection: item.detection || "Threat",
+          source: "realtime",
+        }));
+
+        setQuarantine((prev) => {
+          const byKey = new Map<string, QuarantineEntry>();
+          for (const entry of prev) {
+            byKey.set(entry.quarantineId || entry.quarantineFileName || entry.originalPath, entry);
+          }
+          for (const entry of mapped) {
+            byKey.set(entry.quarantineId || entry.quarantineFileName || entry.originalPath, entry);
+          }
+          return Array.from(byKey.values());
+        });
+      } catch (err) {
+        console.error("Failed to load quarantine manifest:", err);
+      }
+    })();
   }, []);
 
   // Persist logs/threats/quarantine
@@ -376,7 +400,6 @@ const App: React.FC = () => {
       const payload = event.payload as any;
       const threatsArray = (payload.threats as [string, string][]) || [];
       const scanStats = payload.stats as ScanStatsPayload | undefined;
-      const scanStatsText = formatScanStats(scanStats);
 
       const now = new Date();
       const ts = now.toISOString().slice(0, 16).replace("T", " ");
@@ -422,7 +445,7 @@ const App: React.FC = () => {
               result: "threats_found",
               details: `${scanLabel} found ${mapped.length} threat${
                   mapped.length === 1 ? "" : "s"
-              }${scanStatsText}.`,
+              }.`,
             })
         );
       } else {
@@ -435,8 +458,8 @@ const App: React.FC = () => {
               scan_type: scanLogType,
               result: completedWithWarnings ? "completed_with_warnings" : "clean",
               details: completedWithWarnings
-                  ? `${scanLabel} completed with warnings. Some file hashes could not be cloud checked${scanStatsText}.`
-                  : `${scanLabel} completed. No threats found${scanStatsText}.`,
+                  ? `${scanLabel} completed. Some items need attention.`
+                  : `${scanLabel} completed. No threats found.`,
             })
         );
       }
@@ -525,7 +548,7 @@ const App: React.FC = () => {
         fileName: payload.display_name || baseNameFromPath(payload.original_path),
         quarantineFileName: payload.quarantine_file_name,
         originalPath: payload.original_path,
-        quarantinedAt: ts,
+        quarantinedAt: formatQuarantineTimestamp(payload.quarantined_at),
         detection: payload.detection || "Threat",
         source: "realtime",
       };

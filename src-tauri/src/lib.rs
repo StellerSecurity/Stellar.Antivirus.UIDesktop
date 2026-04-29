@@ -41,14 +41,15 @@ const API_HASH_CHECK_PATH: &str = "/api/av/v1/hash/check";
 
 // ---- HTTP hardening ----
 
-const HTTP_CONNECT_TIMEOUT_SECS: u64 = 10;
-const HTTP_TOTAL_TIMEOUT_SECS: u64 = 45;
+const HTTP_CONNECT_TIMEOUT_SECS: u64 = 5;
+const HTTP_TOTAL_TIMEOUT_SECS: u64 = 12;
 const HTTP_RETRIES: usize = 1;
 
 // ---- Scan tuning ----
 
 const QUICK_MAX_FILE_BYTES: u64 = 25 * 1024 * 1024; // 25 MB
 const FULL_MAX_FILE_BYTES: u64 = 200 * 1024 * 1024; // 200 MB
+const FULL_SCAN_MAX_CLOUD_HASHES: usize = 5_000;
 
 // ---- Persisted runtime config ----
 
@@ -179,6 +180,7 @@ struct QuarantineResult {
     quarantine_file_name: String,
     display_name: String,
     detection: Option<String>,
+    quarantined_at: u64,
 }
 
 #[derive(Serialize)]
@@ -562,6 +564,25 @@ fn local_test_detection_name(path: &Path) -> Option<String> {
     None
 }
 
+fn local_test_detection_name_for_hash(hash: &str) -> Option<String> {
+    if hash.eq_ignore_ascii_case("275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f") {
+        return Some("EICAR-Test-File".to_string());
+    }
+    None
+}
+
+fn local_test_detection_name_with_retries(path: &Path) -> Option<String> {
+    for attempt in 0..5 {
+        if let Some(name) = local_test_detection_name(path) {
+            return Some(name);
+        }
+        if attempt < 4 {
+            thread::sleep(Duration::from_millis(120));
+        }
+    }
+    None
+}
+
 // ---- Hash helper ----
 
 fn sha256_of_file(path: &Path) -> Option<String> {
@@ -599,7 +620,11 @@ fn build_client_payload() -> ThreatApiClient {
     }
 }
 
-fn call_threat_api_batches_with_report(files: Vec<ThreatApiFile>) -> ThreatApiBatchReport {
+fn call_threat_api_batches_with_report(
+    files: Vec<ThreatApiFile>,
+    progress_app: Option<&AppHandle>,
+    progress_base_current: usize,
+) -> ThreatApiBatchReport {
     if files.is_empty() {
         return ThreatApiBatchReport::empty();
     }
@@ -621,9 +646,27 @@ fn call_threat_api_batches_with_report(files: Vec<ThreatApiFile>) -> ThreatApiBa
 
     let mut all_results: Vec<ThreatApiResult> = Vec::new();
     const CHUNK_SIZE: usize = 100;
-    const MAX_ATTEMPTS: usize = 3;
+    const MAX_ATTEMPTS: usize = 2;
+    const MAX_FAILED_BATCHES_BEFORE_ABORT: usize = 5;
 
     let total_batches = (files.len() + CHUNK_SIZE - 1) / CHUNK_SIZE;
+    let progress_total = progress_base_current + total_batches.max(1);
+    let emit_cloud_progress = |done_batches: usize| {
+        if let Some(app) = progress_app {
+            let _ = app.emit(
+                "scan_progress",
+                ScanProgressPayload {
+                    file: "Checking scan results...".to_string(),
+                    current: progress_base_current + done_batches.min(total_batches),
+                    total: progress_total,
+                },
+            );
+        }
+    };
+
+    emit_cloud_progress(0);
+
+
     let mut batches_succeeded = 0usize;
     let mut batches_failed = 0usize;
     let mut hashes_checked = 0usize;
@@ -639,6 +682,40 @@ fn call_threat_api_batches_with_report(files: Vec<ThreatApiFile>) -> ThreatApiBa
     );
 
     for (chunk_index, chunk) in files.chunks(CHUNK_SIZE).enumerate() {
+        if SCAN_CANCELLED.load(Ordering::SeqCst) {
+            let remaining_hashes: usize = files
+                .chunks(CHUNK_SIZE)
+                .skip(chunk_index)
+                .map(|remaining| remaining.len())
+                .sum();
+            let remaining_batches = total_batches.saturating_sub(chunk_index);
+            batches_failed += remaining_batches;
+            hashes_failed += remaining_hashes;
+            eprintln!(
+                "[HTTP] cloud verification cancelled after {}/{} batches",
+                chunk_index,
+                total_batches
+            );
+            break;
+        }
+
+        if batches_failed >= MAX_FAILED_BATCHES_BEFORE_ABORT {
+            let remaining_hashes: usize = files
+                .chunks(CHUNK_SIZE)
+                .skip(chunk_index)
+                .map(|remaining| remaining.len())
+                .sum();
+            let remaining_batches = total_batches.saturating_sub(chunk_index);
+            batches_failed += remaining_batches;
+            hashes_failed += remaining_hashes;
+            eprintln!(
+                "[HTTP] aborting cloud verification after {} failed batches; {} hash(es) left unchecked",
+                MAX_FAILED_BATCHES_BEFORE_ABORT,
+                remaining_hashes
+            );
+            break;
+        }
+
         let req = ThreatApiRequest {
             client: build_client_payload(),
             files: chunk.to_vec(),
@@ -766,6 +843,8 @@ fn call_threat_api_batches_with_report(files: Vec<ThreatApiFile>) -> ThreatApiBa
                 );
             }
         }
+
+        emit_cloud_progress(chunk_index + 1);
     }
 
     ThreatApiBatchReport {
@@ -781,7 +860,7 @@ fn call_threat_api_batches_with_report(files: Vec<ThreatApiFile>) -> ThreatApiBa
 }
 
 fn call_threat_api_batch(files: Vec<ThreatApiFile>) -> Result<Vec<ThreatApiResult>, String> {
-    let report = call_threat_api_batches_with_report(files);
+    let report = call_threat_api_batches_with_report(files, None, 0);
 
     if report.batches_failed > 0 && report.batches_succeeded == 0 {
         return Err(format!(
@@ -802,6 +881,80 @@ fn call_threat_api_single(hash: &str) -> Result<Option<ThreatApiResult>, String>
 
     let results = call_threat_api_batch(vec![file])?;
     Ok(results.into_iter().next())
+}
+
+fn extension_is_high_risk_for_cloud(extension: Option<&str>) -> bool {
+    let Some(ext) = extension else {
+        return false;
+    };
+
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "app"
+            | "dmg"
+            | "pkg"
+            | "command"
+            | "tool"
+            | "sh"
+            | "bash"
+            | "zsh"
+            | "fish"
+            | "py"
+            | "pyc"
+            | "js"
+            | "mjs"
+            | "cjs"
+            | "ts"
+            | "tsx"
+            | "jsx"
+            | "jar"
+            | "class"
+            | "jnilib"
+            | "zip"
+            | "rar"
+            | "7z"
+            | "tar"
+            | "gz"
+            | "bz2"
+            | "xz"
+            | "iso"
+            | "exe"
+            | "dll"
+            | "scr"
+            | "msi"
+            | "bat"
+            | "cmd"
+            | "ps1"
+            | "vbs"
+            | "hta"
+            | "dylib"
+            | "so"
+            | "plist"
+            | "mobileconfig"
+            | "launchagent"
+            | "launchdaemon"
+    )
+}
+
+fn cloud_priority_for_file(file: &ThreatApiFile) -> u8 {
+    match file.extension.as_deref().map(|ext| ext.to_ascii_lowercase()) {
+        Some(ext)
+            if matches!(
+                ext.as_str(),
+                "app" | "dmg" | "pkg" | "command" | "tool" | "sh" | "bash" | "zsh" | "fish" | "py" | "js" | "mjs" | "cjs" | "jar" | "exe" | "dll" | "scr" | "msi" | "bat" | "cmd" | "ps1" | "vbs" | "hta" | "dylib" | "so" | "plist" | "mobileconfig"
+            ) => 0,
+        Some(ext) if matches!(ext.as_str(), "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" | "iso") => 1,
+        Some(_) => 2,
+        None => 3,
+    }
+}
+
+fn should_cloud_check_for_scan(file: &ThreatApiFile, scan_kind: &str) -> bool {
+    if scan_kind != "full" {
+        return true;
+    }
+
+    extension_is_high_risk_for_cloud(file.extension.as_deref())
 }
 
 // ---- Shared scan routine ----
@@ -930,7 +1083,14 @@ fn run_hash_lookup_scan(
         }
 
         if let Some(hash) = hash {
-            index_to_path.push((i, path.clone(), hash));
+            if let Some(detection) = local_test_detection_name_for_hash(&hash) {
+                if detection == "EICAR-Test-File" {
+                    eicar_found += 1;
+                }
+                local_threats.push((detection, file_str));
+            } else {
+                index_to_path.push((i, path.clone(), hash));
+            }
         } else {
             skipped_files += 1;
         }
@@ -983,6 +1143,8 @@ fn run_hash_lookup_scan(
     let now_secs = current_timestamp_secs();
     let mut cached_api_results: Vec<ThreatApiResult> = Vec::new();
     let mut files_for_api: Vec<ThreatApiFile> = Vec::new();
+    let mut cloud_hashes_skipped_by_policy: usize = 0;
+    let mut cloud_hashes_skipped_by_limit: usize = 0;
 
     for (hash, file) in unique_files_for_api {
         if let Some(entry) = verdict_cache.get(&hash) {
@@ -993,14 +1155,29 @@ fn run_hash_lookup_scan(
             }
         }
 
-        files_for_api.push(file);
+        if should_cloud_check_for_scan(&file, scan_kind) {
+            files_for_api.push(file);
+        } else {
+            cloud_hashes_skipped_by_policy += 1;
+        }
+    }
+
+    if scan_kind == "full" {
+        files_for_api.sort_by_key(|file| cloud_priority_for_file(file));
+
+        if files_for_api.len() > FULL_SCAN_MAX_CLOUD_HASHES {
+            cloud_hashes_skipped_by_limit = files_for_api.len() - FULL_SCAN_MAX_CLOUD_HASHES;
+            files_for_api.truncate(FULL_SCAN_MAX_CLOUD_HASHES);
+        }
     }
 
     println!(
-        "[SCAN] {} verdict_cache_hits={} cloud_hashes_needed={}",
+        "[SCAN] {} verdict_cache_hits={} cloud_hashes_needed={} cloud_hashes_skipped_by_policy={} cloud_hashes_skipped_by_limit={}",
         notification_label,
         verdict_cache_hits,
-        files_for_api.len()
+        files_for_api.len(),
+        cloud_hashes_skipped_by_policy,
+        cloud_hashes_skipped_by_limit
     );
 
     if SCAN_CANCELLED.load(Ordering::SeqCst) {
@@ -1021,7 +1198,7 @@ fn run_hash_lookup_scan(
         return Ok(());
     }
 
-    let api_report = call_threat_api_batches_with_report(files_for_api);
+    let api_report = call_threat_api_batches_with_report(files_for_api, Some(&app), index_to_path.len());
     let mut api_results = cached_api_results;
     api_results.extend(api_report.results.clone());
 
@@ -1492,8 +1669,8 @@ async fn fake_full_scan(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 async fn quick_scan(app: AppHandle, max_bytes: Option<u64>) -> Result<(), String> {
     SCAN_CANCELLED.store(false, Ordering::SeqCst);
-    const MAX_DEPTH: usize = 2;
-    const MAX_FILES: usize = 150;
+    const MAX_DEPTH: usize = 3;
+    const MAX_FILES: usize = 5_000;
 
     let limit = max_bytes.unwrap_or(QUICK_MAX_FILE_BYTES);
 
@@ -1609,6 +1786,7 @@ fn quarantine_single_file(original: &str, detection: Option<String>) -> Result<O
         quarantine_file_name,
         display_name: original_name,
         detection,
+        quarantined_at: current_timestamp_millis(),
     }))
 }
 
@@ -1623,6 +1801,22 @@ async fn quarantine_files(paths: Vec<String>) -> Result<Vec<QuarantineResult>, S
     }
 
     Ok(results)
+}
+
+#[tauri::command]
+async fn list_quarantine_items() -> Result<Vec<QuarantineResult>, String> {
+    Ok(load_quarantine_manifest()
+        .into_iter()
+        .filter(|entry| quarantine_root().join(&entry.quarantine_file_name).exists())
+        .map(|entry| QuarantineResult {
+            quarantine_id: entry.id,
+            original_path: entry.original_path,
+            quarantine_file_name: entry.quarantine_file_name,
+            display_name: entry.display_name,
+            detection: entry.detection,
+            quarantined_at: entry.quarantined_at,
+        })
+        .collect())
 }
 
 #[tauri::command]
@@ -1878,7 +2072,7 @@ fn start_realtime_watcher(app_handle: AppHandle) {
 
             let mut detected_name: Option<String> = None;
 
-            if let Some(name) = local_test_detection_name(path) {
+            if let Some(name) = local_test_detection_name_with_retries(path) {
                 detected_name = Some(name);
             } else {
                 let mut file_hash_cache = load_file_hash_cache();
@@ -1886,45 +2080,49 @@ fn start_realtime_watcher(app_handle: AppHandle) {
                 save_file_hash_cache(&file_hash_cache);
 
                 if let Some(hash) = hash {
-                    let hash_lower = hash.to_lowercase();
-                    let now_secs = current_timestamp_secs();
-                    let mut verdict_cache = load_verdict_cache();
+                    if let Some(name) = local_test_detection_name_for_hash(&hash) {
+                        detected_name = Some(name);
+                    } else {
+                        let hash_lower = hash.to_lowercase();
+                        let now_secs = current_timestamp_secs();
+                        let mut verdict_cache = load_verdict_cache();
 
-                    let cached_result = verdict_cache
-                        .get(&hash_lower)
-                        .filter(|entry| cached_verdict_is_fresh(entry, now_secs))
-                        .map(|entry| cached_verdict_to_result(&hash_lower, entry));
+                        let cached_result = verdict_cache
+                            .get(&hash_lower)
+                            .filter(|entry| cached_verdict_is_fresh(entry, now_secs))
+                            .map(|entry| cached_verdict_to_result(&hash_lower, entry));
 
-                    let result = match cached_result {
-                        Some(result) => Some(result),
-                        None => match call_threat_api_single(&hash_lower) {
-                            Ok(Some(result)) => {
-                                update_verdict_cache_from_result(
-                                    &mut verdict_cache,
-                                    &result,
-                                    current_timestamp_secs(),
-                                );
-                                save_verdict_cache(&verdict_cache);
-                                Some(result)
+                        let result = match cached_result {
+                            Some(result) => Some(result),
+                            None => match call_threat_api_single(&hash_lower) {
+                                Ok(Some(result)) => {
+                                    update_verdict_cache_from_result(
+                                        &mut verdict_cache,
+                                        &result,
+                                        current_timestamp_secs(),
+                                    );
+                                    save_verdict_cache(&verdict_cache);
+                                    Some(result)
+                                }
+                                Ok(None) => None,
+                                Err(e) => {
+                                    eprintln!("[Realtime] API error for {}: {e}", file);
+                                    None
+                                }
+                            },
+                        };
+
+                        if let Some(result) = result {
+                            let verdict = result.verdict.to_lowercase();
+                            if verdict != "clean" && verdict != "unknown" {
+                                let name = result
+                                    .signature
+                                    .as_ref()
+                                    .map(|s| s.name.clone())
+                                    .unwrap_or_else(|| "Unknown threat".to_string());
+
+                                detected_name = Some(name);
                             }
-                            Ok(None) => None,
-                            Err(e) => {
-                                eprintln!("[Realtime] API error for {}: {e}", file);
-                                None
-                            }
-                        },
-                    };
-
-                    if let Some(result) = result {
-                        let verdict = result.verdict.to_lowercase();
-                        if verdict != "clean" && verdict != "unknown" {
-                            let name = result
-                                .signature
-                                .as_ref()
-                                .map(|s| s.name.clone())
-                                .unwrap_or_else(|| "Unknown threat".to_string());
-
-                            detected_name = Some(name);
                         }
                     }
                 }
@@ -1934,13 +2132,6 @@ fn start_realtime_watcher(app_handle: AppHandle) {
                 match quarantine_single_file(&file, Some(threat_name.clone())) {
                     Ok(Some(result)) => {
                         let _ = app_handle.emit("realtime_threat_quarantined", result.clone());
-
-                        let _ = app_handle
-                            .notification()
-                            .builder()
-                            .title("Stellar Antivirus")
-                            .body(format!("Real-time protection quarantined: {}", file))
-                            .show();
                     }
                     Ok(None) => {
                         let _ = app_handle.emit(
@@ -2187,6 +2378,7 @@ pub fn run() {
             get_realtime_enabled,
             set_realtime_enabled,
             quarantine_files,
+            list_quarantine_items,
             restore_from_quarantine,
             delete_quarantine_files,
             delete_quarantine_items,
